@@ -1,0 +1,71 @@
+[versions]
+agp = "8.7.3"
+kotlin = "2.1.0"
+ksp = "2.1.0-1.0.29"
+
+# AndroidX
+activityCompose = "1.9.3"
+composeBom = "2024.12.01"
+datastorePreferences = "1.1.1"
+lifecycle = "2.8.7"
+navigationCompose = "2.8.5"
+room = "2.6.1"
+
+# Coroutines
+coroutines = "1.10.1"
+
+# HTTP — OkHttp (Strava upload)
+okhttp = "4.12.0"
+
+# BLE — Nordic
+nordicBle = "2.7.5"
+
+# Garmin Java FIT SDK (Maven Central)
+garminFit = "21.205.0"
+
+# Permissions
+accompanistPermissions = "0.36.0"
+
+# Testing
+junit = "4.13.2"
+turbine = "1.2.0"
+mockk = "1.13.13"
+
+[libraries]
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-lifecycle-service = { module = "androidx.lifecycle:lifecycle-service", version.ref = "lifecycle" }
+androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
+androidx-room-runtime  = { module = "androidx.room:room-runtime",  version.ref = "room" }
+androidx-room-ktx      = { module = "androidx.room:room-ktx",      version.ref = "room" }
+androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+
+nordic-ble = { module = "no.nordicsemi.android:ble", version.ref = "nordicBle" }
+nordic-ble-ktx = { module = "no.nordicsemi.android:ble-ktx", version.ref = "nordicBle" }
+
+garmin-fit = { module = "com.garmin:fit", version.ref = "garminFit" }
+
+accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanistPermissions" }
+
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+
+# Test
+junit = { module = "junit:junit", version.ref = "junit" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp            = { id = "com.google.devtools.ksp",            version.ref = "ksp" }
