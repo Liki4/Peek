@@ -62,6 +62,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
     var userId by remember { mutableStateOf("") }
     var weight by remember { mutableStateOf("70") }
+    var maxHr by remember { mutableStateOf(io.github.liki4.peek.ride.Settings.DEFAULT_MAX_HR.toString()) }
     var deviceId by remember { mutableStateOf("") }
     var stravaClientId by remember { mutableStateOf("") }
     var stravaClientSecret by remember { mutableStateOf("") }
@@ -70,6 +71,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         userId = repo.settings.userId.first() ?: ""
         weight = repo.settings.weightKg.first().toString()
+        maxHr = repo.settings.maxHrBpm.first().toString()
         deviceId = repo.settings.ensureDeviceId()
         stravaClientId = repo.settings.stravaClientId.first().orEmpty()
         stravaClientSecret = repo.settings.stravaClientSecret.first().orEmpty()
@@ -106,11 +108,16 @@ fun SettingsScreen(onBack: () -> Unit) {
             onUserIdChange = { userId = it },
             weight = weight,
             onWeightChange = { weight = it },
+            maxHr = maxHr,
+            onMaxHrChange = { maxHr = it },
             deviceId = deviceId,
             onSave = {
                 scope.launch {
                     repo.settings.setUserId(userId.trim())
                     weight.toFloatOrNull()?.let { repo.settings.setWeightKg(it) }
+                    maxHr.toIntOrNull()
+                        ?.takeIf { it in 100..230 }
+                        ?.let { repo.settings.setMaxHrBpm(it) }
                 }
             },
         )
@@ -352,6 +359,8 @@ private fun ProfileCard(
     onUserIdChange: (String) -> Unit,
     weight: String,
     onWeightChange: (String) -> Unit,
+    maxHr: String,
+    onMaxHrChange: (String) -> Unit,
     deviceId: String,
     onSave: () -> Unit,
 ) {
@@ -368,6 +377,14 @@ private fun ProfileCard(
                 value = weight,
                 onValueChange = onWeightChange,
                 label = { Text("体重 (kg)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            )
+            OutlinedTextField(
+                value = maxHr,
+                onValueChange = onMaxHrChange,
+                label = { Text("最大心率 (bpm)") },
+                supportingText = { Text("用于心率区间划分。留空 = 默认 220-30 = 190。") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             )

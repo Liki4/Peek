@@ -12,8 +12,10 @@ import no.nordicsemi.android.ble.data.Data
  *
  * Service `0x180D`, notify char `0x2A37` (Heart Rate Measurement).
  * Optionally reads Battery Level `0x2A19` if available on the strap.
+ *
+ * Uses the post-2.4 Nordic API — overrides directly on BleManager rather than
+ * the deprecated BleManagerGattCallback inner class.
  */
-@Suppress("DEPRECATION")  // BleManagerGattCallback deprecated in newer Nordic; safe on 2.7.x.
 class HrBeltManager(
     context: Context,
     private val onIncoming: (ByteArray) -> Unit,
@@ -28,31 +30,27 @@ class HrBeltManager(
 
     override fun getMinLogPriority(): Int = Log.INFO
 
-    override fun getGattCallback(): BleManagerGattCallback = GattCallback()
+    override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
+        val svc = gatt.getService(HrConstants.HR_SERVICE) ?: return false
+        hrChar = svc.getCharacteristic(HrConstants.HR_MEASUREMENT) ?: return false
+        if ((hrChar!!.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) == 0) return false
 
-    private inner class GattCallback : BleManagerGattCallback() {
-        override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
-            val svc = gatt.getService(HrConstants.HR_SERVICE) ?: return false
-            hrChar = svc.getCharacteristic(HrConstants.HR_MEASUREMENT) ?: return false
-            if ((hrChar!!.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) == 0) return false
+        // Battery service is optional.
+        batteryChar = gatt.getService(HrConstants.BATTERY_SERVICE)
+            ?.getCharacteristic(HrConstants.BATTERY_LEVEL)
+        return true
+    }
 
-            // Battery service is optional.
-            batteryChar = gatt.getService(HrConstants.BATTERY_SERVICE)
-                ?.getCharacteristic(HrConstants.BATTERY_LEVEL)
-            return true
+    override fun onServicesInvalidated() {
+        hrChar = null
+        batteryChar = null
+    }
+
+    override fun initialize() {
+        setNotificationCallback(hrChar).with { _, data: Data ->
+            data.value?.let { onIncoming(it) }
         }
-
-        override fun onServicesInvalidated() {
-            hrChar = null
-            batteryChar = null
-        }
-
-        override fun initialize() {
-            setNotificationCallback(hrChar).with { _, data: Data ->
-                data.value?.let { onIncoming(it) }
-            }
-            enableNotifications(hrChar).enqueue()
-        }
+        enableNotifications(hrChar).enqueue()
     }
 
     /**

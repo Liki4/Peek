@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +30,7 @@ class Settings(private val context: Context) {
     object Keys {
         val USER_ID         = stringPreferencesKey("user_id")
         val WEIGHT_KG       = floatPreferencesKey("weight_kg")
+        val MAX_HR_BPM      = intPreferencesKey("max_hr_bpm")
         val DEVICE_ID       = stringPreferencesKey("device_id")
         val LAST_BIKE_ADDR  = stringPreferencesKey("last_bike_addr")
         val LAST_HR_ADDR    = stringPreferencesKey("last_hr_addr")
@@ -40,6 +42,8 @@ class Settings(private val context: Context) {
 
     val userId:       Flow<String?> = context.peekDataStore.data.map { it[Keys.USER_ID] }
     val weightKg:     Flow<Float>   = context.peekDataStore.data.map { it[Keys.WEIGHT_KG] ?: 70.0f }
+    /** Personal max HR for zone calc — defaults to the 220-30 estimate. */
+    val maxHrBpm:     Flow<Int>     = context.peekDataStore.data.map { it[Keys.MAX_HR_BPM] ?: DEFAULT_MAX_HR }
     val deviceId:     Flow<String?> = context.peekDataStore.data.map { it[Keys.DEVICE_ID] }
     val lastBikeAddr: Flow<String?> = context.peekDataStore.data.map { it[Keys.LAST_BIKE_ADDR] }
     val lastHrAddr:   Flow<String?> = context.peekDataStore.data.map { it[Keys.LAST_HR_ADDR] }
@@ -49,11 +53,16 @@ class Settings(private val context: Context) {
 
     suspend fun setUserId(v: String)        = context.peekDataStore.edit { it[Keys.USER_ID]        = v }
     suspend fun setWeightKg(v: Float)       = context.peekDataStore.edit { it[Keys.WEIGHT_KG]      = v }
+    suspend fun setMaxHrBpm(v: Int)         = context.peekDataStore.edit { it[Keys.MAX_HR_BPM]     = v }
     suspend fun setLastBikeAddr(v: String)  = context.peekDataStore.edit { it[Keys.LAST_BIKE_ADDR] = v }
     suspend fun setLastHrAddr(v: String)    = context.peekDataStore.edit { it[Keys.LAST_HR_ADDR]   = v }
     suspend fun setStravaClientId(v: String)     = context.peekDataStore.edit { it[Keys.STRAVA_CLIENT_ID]     = v }
     suspend fun setStravaClientSecret(v: String) = context.peekDataStore.edit { it[Keys.STRAVA_CLIENT_SECRET] = v }
     suspend fun setStravaRefreshToken(v: String) = context.peekDataStore.edit { it[Keys.STRAVA_REFRESH_TOKEN] = v }
+
+    companion object {
+        const val DEFAULT_MAX_HR = 190
+    }
 
     /** Returns true iff all three Strava credentials are set (and non-blank). */
     suspend fun hasStravaCredentials(): Boolean {

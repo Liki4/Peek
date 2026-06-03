@@ -41,16 +41,41 @@ class RideDataBuilder {
     private var lastHrBpm: Int? = null
     private var totalCalorie: Int? = null
 
+    // ===== Power-based speed model =====
+    //
+    // We model speed as v_t = (P_t / K)^(1/3), the standard cubic
+    // power-vs-airspeed relation for a virtual flat-road model. The constant
+    // K (W·s³/m³, lumped Cd·A·ρ + rolling) is calibrated per-ride so that
+    // integrated speed matches the bike's reported cumulative distance:
+    //
+    //     Σ v_t · dt = D   with dt = 1s
+    //   ⇒ K^(1/3) = Σ P_t^(1/3) / D
+    //
+    // Closed form, no iteration. Both numerator and denominator grow as the
+    // ride proceeds, so K^(1/3) stabilizes after the first ~30 s. Until the
+    // bike has reported ≥ 1 m of distance we fall back to the per-second
+    // Δdistance × 3.6 estimate, which is noisy (1 m resolution = 3.6 km/h)
+    // but well-defined from the very first sample.
+    private var sumCbrtPower: Double = 0.0
+
     val secondsRecorded: Int get() = resistance.size
     val lastDistanceM: Int? get() = distanceM.lastOrNull()
     val lastCalorie: Int? get() = totalCalorie
 
     /**
-     * Speed for the most recent second, derived from the last two non-null
-     * distanceM samples (Δm/s × 3.6). Null until at least two distance
-     * samples have arrived.
+     * Speed for the most recent second. Uses the power-based model once
+     * cumulative distance > 0; falls back to Δdistance × 3.6 until then.
      */
     val lastSpeedKmh: Float? get() {
+        val td = lastTd
+        val p = td?.watt?.toInt() ?: return fallbackDeltaSpeed()
+        val d = distanceM.lastOrNull { it != null } ?: return fallbackDeltaSpeed()
+        if (d <= 0 || sumCbrtPower <= 0.0 || p <= 0) return fallbackDeltaSpeed()
+        val kCbrt = sumCbrtPower / d
+        return (Math.cbrt(p.toDouble()) / kCbrt * 3.6).toFloat()
+    }
+
+    private fun fallbackDeltaSpeed(): Float? {
         val n = distanceM.size
         if (n < 2) return null
         val cur = distanceM[n - 1] ?: return null
@@ -70,6 +95,18 @@ class RideDataBuilder {
         return if (tail.isEmpty()) null else tail.average().toInt()
     }
 
+    /**
+     * Snapshot the per-second HR series as a fresh IntArray. Missing samples
+     * (HR strap drop-outs or pre-strap seconds) are encoded as 0 — chart
+     * renderers should skip zeros rather than drawing them as floor values.
+     */
+    fun hrSnapshot(): IntArray {
+        val n = hrBpm.size
+        val out = IntArray(n)
+        for (i in 0 until n) out[i] = hrBpm[i] ?: 0
+        return out
+    }
+
     fun feedTrainData(td: TrainData) {
         if (startTimeUnixS == 0L) td.startTime?.let { startTimeUnixS = it }
         lastTd = td
@@ -87,11 +124,13 @@ class RideDataBuilder {
      */
     fun tick() {
         val td = lastTd
+        val p = td?.watt?.toInt()
         resistance += td?.resistance?.toInt()
         rpm += td?.rpm?.toInt()
-        watt += td?.watt?.toInt()
+        watt += p
         distanceM += td?.distanceM?.toInt()
         hrBpm += lastHrBpm
+        if (p != null && p > 0) sumCbrtPower += Math.cbrt(p.toDouble())
     }
 
     /** Snapshot the accumulated state into an immutable [RideData]. */
@@ -99,17 +138,25 @@ class RideDataBuilder {
         val n = resistance.size
         if (n == 0) return RideData.EMPTY.copy(startTimeUnixS = startTimeUnixS)
 
-        // Derive speed from per-second distance deltas.
+        val totalD = distanceM.lastOrNull { it != null } ?: 0
+        // Calibrate K from the whole ride: K^(1/3) = ΣP^(1/3) / D. Used to
+        // emit a smooth speed for every record. If we never accumulated
+        // meaningful power+distance (totalD == 0 or sumCbrtPower == 0), fall
+        // back to Δdistance — same source the live tile used before this model.
+        val kCbrt = if (totalD > 0 && sumCbrtPower > 0.0) sumCbrtPower / totalD else 0.0
         val speedKmh = ArrayList<Float?>(n)
         for (i in 0 until n) {
-            if (i == 0) { speedKmh += null; continue }
-            val cur = distanceM[i]
-            val prev = distanceM[i - 1]
-            if (cur == null || prev == null) {
-                speedKmh += null
+            val p = watt[i]
+            if (kCbrt > 0.0 && p != null && p > 0) {
+                speedKmh += (Math.cbrt(p.toDouble()) / kCbrt * 3.6).toFloat()
             } else {
-                val dMeters = (cur - prev).coerceAtLeast(0)
-                speedKmh += dMeters * 3.6f
+                val cur = distanceM[i]
+                val prev = if (i > 0) distanceM[i - 1] else null
+                if (cur != null && prev != null) {
+                    speedKmh += (cur - prev).coerceAtLeast(0) * 3.6f
+                } else {
+                    speedKmh += null
+                }
             }
         }
 
@@ -121,7 +168,7 @@ class RideDataBuilder {
             watt = watt.toList(),
             speedKmh = speedKmh,
             hrBpm = hrBpm.toList(),
-            totalDistanceM = distanceM.lastOrNull { it != null },
+            totalDistanceM = totalD.takeIf { it > 0 },
             totalCalorie = totalCalorie,
         )
     }
@@ -130,5 +177,6 @@ class RideDataBuilder {
         startTimeUnixS = 0
         resistance.clear(); rpm.clear(); watt.clear(); distanceM.clear(); hrBpm.clear()
         lastTd = null; lastHrBpm = null; totalCalorie = null
+        sumCbrtPower = 0.0
     }
 }

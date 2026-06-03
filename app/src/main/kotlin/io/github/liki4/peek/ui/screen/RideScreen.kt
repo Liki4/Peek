@@ -23,6 +23,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,6 +36,8 @@ import androidx.compose.ui.unit.sp
 import io.github.liki4.peek.ride.RideRepository
 import io.github.liki4.peek.ride.RideState
 import io.github.liki4.peek.ride.RideUiState
+import io.github.liki4.peek.ride.Settings as PeekSettings
+import io.github.liki4.peek.ui.component.HrChart
 
 /**
  * Live ride screen — iGPSPORT-inspired layout.
@@ -54,15 +58,17 @@ fun RideScreen(
     onOpenSettings: () -> Unit = {},
 ) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val maxHr by repo.settings.maxHrBpm.collectAsState(initial = PeekSettings.DEFAULT_MAX_HR)
+    val hrSeries by repo.hrSeries.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
         StatusHeader(ui = ui, onOpenSettings = onOpenSettings)
         Spacer(Modifier.height(8.dp))
 
         if (isLandscape) {
-            LandscapeBody(ui = ui, modifier = Modifier.weight(1f))
+            LandscapeBody(ui = ui, maxHr = maxHr, hrSeries = hrSeries, modifier = Modifier.weight(1f))
         } else {
-            PortraitBody(ui = ui, modifier = Modifier.weight(1f))
+            PortraitBody(ui = ui, maxHr = maxHr, hrSeries = hrSeries, modifier = Modifier.weight(1f))
         }
 
         Spacer(Modifier.height(8.dp))
@@ -108,13 +114,13 @@ private fun StatusHeader(ui: RideUiState, onOpenSettings: () -> Unit) {
 // ============================== PORTRAIT ==============================
 
 @Composable
-private fun PortraitBody(ui: RideUiState, modifier: Modifier = Modifier) {
+private fun PortraitBody(ui: RideUiState, maxHr: Int, hrSeries: IntArray, modifier: Modifier = Modifier) {
     Column(modifier = modifier.fillMaxWidth()) {
         TimeRow(ui.secondsRecorded)
         ThinDivider()
         DistanceRow(ui.live.distanceM)
         ThinDivider()
-        HeartRateBlock(ui = ui, modifier = Modifier.weight(1f))
+        HeartRateBlock(ui = ui, maxHr = maxHr, hrSeries = hrSeries, modifier = Modifier.weight(1.4f))
         ThinDivider()
         Row(modifier = Modifier.fillMaxWidth().weight(0.7f)) {
             HalfTile("踏频", ui.live.rpm?.toString(), null, modifier = Modifier.weight(1f))
@@ -133,7 +139,7 @@ private fun PortraitBody(ui: RideUiState, modifier: Modifier = Modifier) {
 // ============================== LANDSCAPE ==============================
 
 @Composable
-private fun LandscapeBody(ui: RideUiState, modifier: Modifier = Modifier) {
+private fun LandscapeBody(ui: RideUiState, maxHr: Int, hrSeries: IntArray, modifier: Modifier = Modifier) {
     Row(modifier = modifier.fillMaxWidth()) {
         // Left column: time, distance, HR
         Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -141,7 +147,7 @@ private fun LandscapeBody(ui: RideUiState, modifier: Modifier = Modifier) {
             ThinDivider()
             DistanceRow(ui.live.distanceM)
             ThinDivider()
-            HeartRateBlock(ui = ui, modifier = Modifier.weight(1f))
+            HeartRateBlock(ui = ui, maxHr = maxHr, hrSeries = hrSeries, modifier = Modifier.weight(1.5f))
         }
         VerticalThinDivider()
         // Right column: 2x2 metric grid
@@ -175,7 +181,12 @@ private fun DistanceRow(distanceM: Int?) {
 }
 
 @Composable
-private fun HeartRateBlock(ui: RideUiState, modifier: Modifier = Modifier) {
+private fun HeartRateBlock(
+    ui: RideUiState,
+    maxHr: Int,
+    hrSeries: IntArray,
+    modifier: Modifier = Modifier,
+) {
     val live = ui.live
     Column(modifier = modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Row(
@@ -186,40 +197,51 @@ private fun HeartRateBlock(ui: RideUiState, modifier: Modifier = Modifier) {
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = "❤",
-                    fontSize = 32.sp,
+                    fontSize = 28.sp,
                     color = HrColor,
-                    modifier = Modifier.padding(end = 4.dp, bottom = 6.dp),
+                    modifier = Modifier.padding(end = 4.dp, bottom = 4.dp),
                 )
                 Text(
                     text = live.hrBpm?.toString() ?: "—",
-                    fontSize = 56.sp,
+                    fontSize = 44.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = HrColor,
                 )
                 Text(
                     text = "bpm",
-                    fontSize = 14.sp,
+                    fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 12.dp),
+                    modifier = Modifier.padding(start = 4.dp, bottom = 10.dp),
                 )
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(
                     text = "AVG: ${live.avgHrBpm?.toString() ?: "—"}",
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
                     text = "MAX: ${live.maxHrBpm?.toString() ?: "—"}",
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
             }
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
+        HrChart(
+            samples = hrSeries,
+            maxHr = maxHr,
+            // Rolling 5-minute window: matches iGPSPORT's live cadence —
+            // long enough to see effort context, short enough to keep the
+            // Y axis tight around recent values.
+            windowSeconds = 300,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+        )
+        Spacer(Modifier.height(4.dp))
         HrZoneBar(
             currentHr = live.hrBpm,
-            modifier = Modifier.fillMaxWidth().height(14.dp),
+            maxHr = maxHr,
+            modifier = Modifier.fillMaxWidth().height(8.dp),
         )
     }
 }
@@ -227,12 +249,10 @@ private fun HeartRateBlock(ui: RideUiState, modifier: Modifier = Modifier) {
 /**
  * Heart-rate zone strip — 5 colored segments (Z1 grey, Z2 blue, Z3 green,
  * Z4 orange, Z5 red). The current zone segment is full opacity; others are
- * dimmed. Zones use a fixed 220-30=190 max HR (good enough for a v1 tile —
- * making it user-configurable is a settings-screen task).
+ * dimmed. [maxHr] comes from Settings (default 220-30=190).
  */
 @Composable
-private fun HrZoneBar(currentHr: Int?, modifier: Modifier = Modifier) {
-    val maxHr = 190
+private fun HrZoneBar(currentHr: Int?, maxHr: Int, modifier: Modifier = Modifier) {
     val zoneBoundaries = listOf(
         0.50f to 0.60f, // Z1
         0.60f to 0.70f, // Z2

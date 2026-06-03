@@ -15,13 +15,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.compose.foundation.layout.height
 import io.github.liki4.peek.ride.RideRepository
 import io.github.liki4.peek.ride.RideState
 import io.github.liki4.peek.ride.RideUiState
+import io.github.liki4.peek.ride.Settings as PeekSettings
+import io.github.liki4.peek.ui.component.HrChart
 import java.io.File
 
 @Composable
@@ -32,6 +38,12 @@ fun SessionScreen(
 ) {
     val ctx = LocalContext.current
     val exportedFile = ui.lastFit
+    val sessionId = ui.lastFitSessionId
+    // Observe the freshly-inserted row so we can show its persisted Strava status.
+    val sessions by repo.rideDao.observeAll().collectAsState(initial = emptyList())
+    val session = sessions.firstOrNull { it.id == sessionId }
+    val hrSeries by repo.hrSeries.collectAsState()
+    val maxHr by repo.settings.maxHrBpm.collectAsState(initial = PeekSettings.DEFAULT_MAX_HR)
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -45,6 +57,25 @@ fun SessionScreen(
                 SummaryRow("Distance", "%.2f km".format((ui.live.distanceM ?: 0) / 1000f))
                 SummaryRow("Calories", "${ui.live.calorieKcal ?: 0} kcal")
                 SummaryRow("Max power", ui.live.watt?.let { "$it W" } ?: "—")
+            }
+        }
+
+        if (hrSeries.any { it > 0 }) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    Text(
+                        "心率曲线",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.padding(top = 4.dp))
+                    HrChart(
+                        samples = hrSeries,
+                        maxHr = maxHr,
+                        windowSeconds = null, // full ride
+                        modifier = Modifier.fillMaxWidth().height(140.dp),
+                    )
+                }
             }
         }
 
@@ -65,16 +96,20 @@ fun SessionScreen(
                     Text("已写入:", style = MaterialTheme.typography.labelSmall)
                     Text(exportedFile.name, style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.padding(4.dp))
-                    StravaStatusRow(state = ui.strava, onRetry = {
-                        repo.uploadToStrava(exportedFile, sessionId = null)
-                    })
+                    StravaUploadCell(
+                        sessionId = sessionId,
+                        stravaActivityId = session?.stravaActivityId,
+                        uploading = sessionId != null && ui.uploadingSessionId == sessionId,
+                        error = sessionId?.let { ui.uploadErrors[it] },
+                        onUpload = { sid -> repo.uploadToStrava(sid) },
+                    )
                     Spacer(Modifier.padding(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
+                        OutlinedButton(
                             modifier = Modifier.weight(1f),
                             onClick = { shareFit(ctx, exportedFile) },
                         ) { Text("分享 FIT…") }
-                        OutlinedButton(onClick = onReturnHome) { Text("完成") }
+                        Button(onClick = onReturnHome) { Text("完成") }
                     }
                 }
             }
@@ -82,37 +117,47 @@ fun SessionScreen(
     }
 }
 
+/**
+ * Reusable "upload to Strava" cell: status text + button. Used by SessionScreen
+ * after a fresh export, and by HistoryScreen for each past row.
+ */
 @Composable
-private fun StravaStatusRow(
-    state: io.github.liki4.peek.ride.RideUiState.StravaState,
-    onRetry: () -> Unit,
+fun StravaUploadCell(
+    sessionId: Long?,
+    stravaActivityId: Long?,
+    uploading: Boolean,
+    error: String?,
+    onUpload: (Long) -> Unit,
 ) {
-    when (state) {
-        is io.github.liki4.peek.ride.RideUiState.StravaState.Idle ->
-            Text("等待上传 Strava…", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        is io.github.liki4.peek.ride.RideUiState.StravaState.NotConfigured ->
-            Text("未配置 Strava 凭据 — 设置中填入 client_id/secret/refresh_token 即可自动同步。",
+    Column {
+        when {
+            stravaActivityId != null -> Text(
+                "✓ 已同步 Strava (#$stravaActivityId)",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        is io.github.liki4.peek.ride.RideUiState.StravaState.Uploading ->
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                CircularProgressIndicator(strokeWidth = 2.dp,
-                    modifier = Modifier.padding(end = 8.dp).run { this })
+                color = MaterialTheme.colorScheme.primary,
+            )
+            uploading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.padding(end = 8.dp))
                 Text("正在上传 Strava…", style = MaterialTheme.typography.bodySmall)
             }
-        is io.github.liki4.peek.ride.RideUiState.StravaState.Success ->
-            Text("✓ 已同步 Strava (#${state.activityId})",
+            error != null -> Text(
+                "Strava 上传失败：$error",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary)
-        is io.github.liki4.peek.ride.RideUiState.StravaState.Failed -> {
-            Column {
-                Text("Strava 上传失败：${state.message}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error)
-                OutlinedButton(onClick = onRetry, modifier = Modifier.padding(top = 4.dp)) {
-                    Text("重试")
-                }
+                color = MaterialTheme.colorScheme.error,
+            )
+            else -> Text(
+                "本地保存。需要时可上传到 Strava。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (stravaActivityId == null) {
+            OutlinedButton(
+                onClick = { sessionId?.let(onUpload) },
+                enabled = !uploading && sessionId != null,
+                modifier = Modifier.padding(top = 4.dp).fillMaxWidth(),
+            ) {
+                Text(if (error != null) "重试上传 Strava" else "上传到 Strava")
             }
         }
     }

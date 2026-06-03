@@ -46,16 +46,19 @@ data class RideUiState(
     val error: String? = null,
     /** Snapshot of [state] before we transitioned to [RideState.RECONNECTING], so we can restore it on link recovery. */
     val priorStateBeforeReconnect: RideState? = null,
-    val strava: StravaState = StravaState.Idle,
+    /**
+     * Room row id created by the most recent [io.github.liki4.peek.ride.RideRepository.exportFit].
+     * SessionScreen uses this to drive the "upload to Strava" button against the row we just inserted.
+     */
+    val lastFitSessionId: Long? = null,
+    /** Session id whose Strava upload is currently in flight, or null if none. */
+    val uploadingSessionId: Long? = null,
+    /**
+     * Last upload error per session id, surfaced under the row. Cleared when a retry starts.
+     * Persistent success is read from [io.github.liki4.peek.history.RideSessionEntity.stravaActivityId].
+     */
+    val uploadErrors: Map<Long, String> = emptyMap(),
 ) {
-    /** Upload-pipeline status surfaced to the SessionScreen / HistoryScreen. */
-    sealed class StravaState {
-        data object Idle : StravaState()
-        data object NotConfigured : StravaState()
-        data object Uploading : StravaState()
-        data class Success(val activityId: Long) : StravaState()
-        data class Failed(val message: String) : StravaState()
-    }
 
     data class ConnectedBike(val address: String, val name: String)
     data class ConnectedHr(val address: String, val name: String, val batteryPct: Int? = null)

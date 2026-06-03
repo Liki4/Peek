@@ -20,8 +20,12 @@ import no.nordicsemi.android.ble.data.Data
  *
  * All incoming notification bytes are forwarded synchronously to [onIncoming]
  * — the higher-level [KeepBikeClient] is responsible for parsing.
+ *
+ * The lifecycle hooks (isRequiredServiceSupported / onServicesInvalidated /
+ * initialize) are overridden directly on BleManager — this is the post-2.4
+ * Nordic API; the older BleManagerGattCallback inner-class pattern is
+ * deprecated.
  */
-@Suppress("DEPRECATION")  // BleManagerGattCallback is deprecated in newer Nordic; safe on 2.7.x.
 class KeepBleManager(
     context: Context,
     private val onIncoming: (ByteArray) -> Unit,
@@ -35,34 +39,30 @@ class KeepBleManager(
 
     override fun getMinLogPriority(): Int = Log.INFO
 
-    override fun getGattCallback(): BleManagerGattCallback = GattCallback()
+    override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
+        val svc = gatt.getService(Constants.KEEP_SERVICE) ?: return false
+        val c = svc.getCharacteristic(Constants.KEEP_CHAR) ?: return false
+        val required = BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY
+        if ((c.properties and required) != required) return false
+        charFF01 = c
+        return true
+    }
 
-    private inner class GattCallback : BleManagerGattCallback() {
-        override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
-            val svc = gatt.getService(Constants.KEEP_SERVICE) ?: return false
-            val c = svc.getCharacteristic(Constants.KEEP_CHAR) ?: return false
-            val required = BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or
-                BluetoothGattCharacteristic.PROPERTY_NOTIFY
-            if ((c.properties and required) != required) return false
-            charFF01 = c
-            return true
+    override fun onServicesInvalidated() {
+        charFF01 = null
+    }
+
+    override fun initialize() {
+        // Request MTU 185 (matches what the real Keep app negotiates)
+        requestMtu(Constants.MTU).enqueue()
+
+        // Wire up notification callback BEFORE enabling notifications,
+        // so we don't miss the first push.
+        setNotificationCallback(charFF01).with { _, data: Data ->
+            data.value?.let { onIncoming(it) }
         }
-
-        override fun onServicesInvalidated() {
-            charFF01 = null
-        }
-
-        override fun initialize() {
-            // Request MTU 185 (matches what the real Keep app negotiates)
-            requestMtu(Constants.MTU).enqueue()
-
-            // Wire up notification callback BEFORE enabling notifications,
-            // so we don't miss the first push.
-            setNotificationCallback(charFF01).with { _, data: Data ->
-                data.value?.let { onIncoming(it) }
-            }
-            enableNotifications(charFF01).enqueue()
-        }
+        enableNotifications(charFF01).enqueue()
     }
 
     /** Write one raw Keep packet via write-without-response. */

@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import io.github.liki4.peek.history.RideSessionEntity
 import io.github.liki4.peek.ride.RideRepository
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -38,8 +37,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Per-ride history list. Each row exposes share + delete on the previously
- * exported FIT file.
+ * Per-ride history list. Each row exposes:
+ * - 上传到 Strava (opt-in; status pulled from Room + transient RideUiState)
+ * - 分享 FIT (system share intent)
+ * - 删除 (filesystem + Room row)
  */
 @Composable
 fun HistoryScreen(onBack: () -> Unit) {
@@ -48,6 +49,7 @@ fun HistoryScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     val sessions by repo.rideDao.observeAll().collectAsState(initial = emptyList())
+    val ui by repo.state.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(
@@ -72,6 +74,9 @@ fun HistoryScreen(onBack: () -> Unit) {
                 items(sessions, key = { it.id }) { session ->
                     SessionRow(
                         session = session,
+                        uploading = ui.uploadingSessionId == session.id,
+                        error = ui.uploadErrors[session.id],
+                        onUpload = { repo.uploadToStrava(session.id) },
                         onShare = { shareFit(ctx, session.fitFilePath) },
                         onDelete = {
                             scope.launch {
@@ -89,6 +94,9 @@ fun HistoryScreen(onBack: () -> Unit) {
 @Composable
 private fun SessionRow(
     session: RideSessionEntity,
+    uploading: Boolean,
+    error: String?,
+    onUpload: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -114,14 +122,15 @@ private fun SessionRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            session.stravaActivityId?.let {
-                Text(
-                    "✓ 已上传 Strava (#$it)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            StravaUploadCell(
+                sessionId = session.id,
+                stravaActivityId = session.stravaActivityId,
+                uploading = uploading,
+                error = error,
+                onUpload = { onUpload() },
+            )
+            Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onShare, modifier = Modifier.weight(1f)) {
                     Text("分享 FIT")

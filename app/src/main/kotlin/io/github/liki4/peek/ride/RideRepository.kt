@@ -54,6 +54,15 @@ class RideRepository private constructor(private val appContext: Context) {
     private val _state = MutableStateFlow(RideUiState())
     val state: StateFlow<RideUiState> = _state.asStateFlow()
 
+    /**
+     * Per-second HR series snapshot, published after each tick. 0 means
+     * "no sample at this second" — chart consumers should skip zeros.
+     * Held separately from [state] so list-typed UI subscribers don't churn
+     * the whole RideUiState whenever a single value lands.
+     */
+    private val _hrSeries = MutableStateFlow(IntArray(0))
+    val hrSeries: StateFlow<IntArray> = _hrSeries.asStateFlow()
+
     private var pollJob: Job? = null
 
     init {
@@ -239,10 +248,12 @@ class RideRepository private constructor(private val appContext: Context) {
     fun startRide() {
         scope.launch {
             builder.reset()
+            _hrSeries.value = IntArray(0)
             _state.update { it.copy(
                 live = RideUiState.LiveMetrics(),
                 secondsRecorded = 0,
                 lastFit = null,
+                lastFitSessionId = null,
             ) }
             runCatching { bikeClient.setStatus(TrainingStatus.TRAINING) }
             _state.update { it.copy(state = RideState.WAITING_KNOB) }
@@ -283,6 +294,7 @@ class RideRepository private constructor(private val appContext: Context) {
                         val td = parseTrainData(frame.payload)
                         builder.feedTrainData(td)
                         builder.tick()
+                        _hrSeries.value = builder.hrSnapshot()
                         _state.update {
                             it.copy(
                                 live = it.live.copy(
@@ -329,9 +341,9 @@ class RideRepository private constructor(private val appContext: Context) {
                 val out = File(outDir, "peek_ride_$stamp.fit")
                 FitWriter.write(ride, out)
 
-                // Persist a row in the history DB so the session survives the
-                // next ride wiping `lastFit`. Best-effort — if Room write fails
-                // the FIT is still on disk and the user can retrieve it manually.
+                // Persist a row in the history DB. Best-effort — if Room write
+                // fails the FIT is still on disk and the user can grab it via
+                // the share intent from SessionScreen.
                 val sessionId = runCatching {
                     rideDao.insert(
                         RideSessionEntity(
@@ -347,15 +359,10 @@ class RideRepository private constructor(private val appContext: Context) {
                     )
                 }.getOrNull()
 
-                _state.update { it.copy(state = RideState.STOPPED, lastFit = out) }
-
-                // Auto-upload to Strava if credentials are configured. Runs
-                // sequentially after the FIT write so we don't compete for I/O.
-                if (settings.hasStravaCredentials()) {
-                    uploadToStrava(out, sessionId)
-                } else {
-                    _state.update { it.copy(strava = RideUiState.StravaState.NotConfigured) }
+                _state.update {
+                    it.copy(state = RideState.STOPPED, lastFit = out, lastFitSessionId = sessionId)
                 }
+                // No auto-upload: user opts in per-session from SessionScreen or HistoryScreen.
             } catch (e: Exception) {
                 _state.update { it.copy(state = RideState.STOPPED, error = "Export: ${e.message}") }
             }
@@ -363,42 +370,60 @@ class RideRepository private constructor(private val appContext: Context) {
     }
 
     /**
-     * Upload [fitFile] to Strava using the refresh-token flow. Always non-suspend
-     * — invoked internally from [exportFit] and (later) from a manual retry button.
+     * Upload the FIT file backing [sessionId] (looked up in Room) to Strava using
+     * the refresh-token flow. Non-suspend; runs on the long-lived repo scope.
      *
-     * @param sessionId optional Room row id; if non-null we update its
-     *     stravaStatus + stravaActivityId on success.
+     * UI surfaces progress via [RideUiState.uploadingSessionId] (in-flight) and
+     * [RideUiState.uploadErrors] (per-session error message). Persistent success
+     * lives in Room ([RideSessionEntity.stravaActivityId]).
      */
-    fun uploadToStrava(fitFile: File, sessionId: Long?) {
-        scope.launch { runUploadToStrava(fitFile, sessionId) }
+    fun uploadToStrava(sessionId: Long) {
+        scope.launch { runUploadToStrava(sessionId) }
     }
 
-    private suspend fun runUploadToStrava(fitFile: File, sessionId: Long?) {
-        if (!settings.hasStravaCredentials()) {
-            _state.update { it.copy(strava = RideUiState.StravaState.NotConfigured) }
+    private suspend fun runUploadToStrava(sessionId: Long) {
+        val row = rideDao.byId(sessionId)
+        if (row == null) {
+            _state.update { it.copy(uploadErrors = it.uploadErrors + (sessionId to "找不到这次骑行记录")) }
             return
         }
-        _state.update { it.copy(strava = RideUiState.StravaState.Uploading) }
+        val fitFile = File(row.fitFilePath)
+        if (!fitFile.exists()) {
+            _state.update { it.copy(uploadErrors = it.uploadErrors + (sessionId to "FIT 文件已被删除：${fitFile.name}")) }
+            return
+        }
+        if (!settings.hasStravaCredentials()) {
+            _state.update {
+                it.copy(uploadErrors = it.uploadErrors + (sessionId to "请先在设置里填入 Strava client_id/secret/refresh_token"))
+            }
+            return
+        }
+        _state.update {
+            it.copy(
+                uploadingSessionId = sessionId,
+                uploadErrors = it.uploadErrors - sessionId,
+            )
+        }
         try {
             val clientId = settings.stravaClientId.first()!!
             val clientSecret = settings.stravaClientSecret.first()!!
             val refreshToken = settings.stravaRefreshToken.first()!!
             val token = strava.refresh(clientId, clientSecret, refreshToken)
             val result = strava.uploadFit(token.accessToken, fitFile)
-            sessionId?.let {
-                runCatching { rideDao.setStravaStatus(it, status = 1, activityId = result.activityId) }
-            }
-            _state.update { it.copy(strava = RideUiState.StravaState.Success(result.activityId)) }
-        } catch (e: StravaException) {
-            sessionId?.let {
-                runCatching { rideDao.setStravaStatus(it, status = 2, activityId = null) }
-            }
-            _state.update { it.copy(strava = RideUiState.StravaState.Failed(e.message ?: "unknown")) }
+            runCatching { rideDao.setStravaStatus(sessionId, status = 1, activityId = result.activityId) }
+            _state.update { it.copy(uploadingSessionId = null) }
         } catch (e: Exception) {
-            sessionId?.let {
-                runCatching { rideDao.setStravaStatus(it, status = 2, activityId = null) }
+            val msg = (e as? StravaException)?.message
+                ?: e.message
+                ?: e::class.simpleName
+                ?: "error"
+            runCatching { rideDao.setStravaStatus(sessionId, status = 2, activityId = null) }
+            _state.update {
+                it.copy(
+                    uploadingSessionId = null,
+                    uploadErrors = it.uploadErrors + (sessionId to msg),
+                )
             }
-            _state.update { it.copy(strava = RideUiState.StravaState.Failed(e.message ?: e::class.simpleName ?: "error")) }
         }
     }
 
