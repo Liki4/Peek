@@ -62,8 +62,32 @@ class RideForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Sticky so Android will try to restart us if killed during a ride.
-        return START_STICKY
+        // NOT_STICKY: when the user swipes Peek out of recents (onTaskRemoved
+        // below fires), we don't want Android to silently relaunch the service
+        // — that would defeat the "swipe = exit" contract.
+        return START_NOT_STICKY
+    }
+
+    /**
+     * Triggered when the user swipes Peek away from the recents screen.
+     *
+     * Per the user contract: home/back = keep service alive (preserves mid-ride
+     * recording), but explicitly swiping the app away = full exit. Tear down
+     * the bike + HR connections, stop the foreground service, and kill our own
+     * process so nothing lingers.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        runCatching {
+            val repo = RideRepository.get(this)
+            repo.disconnectBike()
+            repo.disconnectHr()
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        // Process exit. The Activity should already be gone (task removed),
+        // but if anything else is hanging on this matches the user's intent.
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     private fun notifText(ui: RideUiState): String {

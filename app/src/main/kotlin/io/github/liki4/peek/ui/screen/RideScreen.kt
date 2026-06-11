@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.liki4.peek.ftms.FtmsBridge
 import io.github.liki4.peek.ride.RideRepository
 import io.github.liki4.peek.ride.RideState
 import io.github.liki4.peek.ride.RideUiState
@@ -104,6 +105,15 @@ private fun StatusHeader(ui: RideUiState, onOpenSettings: () -> Unit) {
                 Text(it, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        val client = ui.bridge as? FtmsBridge.State.ClientConnected
+        if (client != null) {
+            Text(
+                "▲ ${client.deviceName}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(end = 8.dp),
+            )
         }
         if (ui.state == RideState.CONNECTED) {
             TextButton(onClick = onOpenSettings) { Text("设置") }
@@ -231,10 +241,11 @@ private fun HeartRateBlock(
         HrChart(
             samples = hrSeries,
             maxHr = maxHr,
-            // Rolling 5-minute window: matches iGPSPORT's live cadence —
-            // long enough to see effort context, short enough to keep the
-            // Y axis tight around recent values.
-            windowSeconds = 300,
+            // Rolling 60-second window: fixed-width x-axis so the chart
+            // doesn't stretch a handful of points across the screen. Data
+            // anchors to the right; left side stays blank until the window
+            // is full.
+            windowSeconds = 60,
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
         Spacer(Modifier.height(4.dp))

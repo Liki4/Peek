@@ -5,6 +5,10 @@ import io.github.liki4.peek.ble.KeepBikeClient
 import io.github.liki4.peek.ble.runHandshake
 import io.github.liki4.peek.fit.FitWriter
 import io.github.liki4.peek.fit.RideDataBuilder
+import io.github.liki4.peek.ftms.CalibrationRunner
+import io.github.liki4.peek.ftms.ErgController
+import io.github.liki4.peek.ftms.FtmsBridge
+import io.github.liki4.peek.ftms.PowerModel
 import io.github.liki4.peek.history.RideDatabase
 import io.github.liki4.peek.history.RideSessionEntity
 import io.github.liki4.peek.hr.HrBeltClient
@@ -15,6 +19,9 @@ import io.github.liki4.peek.protocol.TrainingStatus
 import io.github.liki4.peek.protocol.parseTrainAttribute
 import io.github.liki4.peek.protocol.parseTrainData
 import io.github.liki4.peek.protocol.parseTrainingStatus
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,6 +57,7 @@ class RideRepository private constructor(private val appContext: Context) {
     private val hrClient = HrBeltClient(appContext)
     private val builder = RideDataBuilder()
     private val strava = StravaClient()
+    private val debugLogger = RideLogger(appContext)
 
     private val _state = MutableStateFlow(RideUiState())
     val state: StateFlow<RideUiState> = _state.asStateFlow()
@@ -64,6 +72,31 @@ class RideRepository private constructor(private val appContext: Context) {
     val hrSeries: StateFlow<IntArray> = _hrSeries.asStateFlow()
 
     private var pollJob: Job? = null
+
+    // ===== FTMS bridge state =====
+    //
+    // PowerModel is loaded lazily from settings.powerModelBlob on first ride
+    // tick (we don't block construction on DataStore I/O). When the user runs
+    // the calibration wizard or finishes a ride that fed new samples,
+    // [persistPowerModel] writes the blob back.
+    private val powerModel = PowerModel()
+    @Volatile private var powerModelLoaded = false
+    @Volatile private var lastCommandedLevel: Int? = null
+    private val ergCtrl = ErgController()
+    /**
+     * Raw 1Hz (rpm, watt) samples for the calibration wizard. We always emit
+     * on every TrainData tick during a connected session; the runner ignores
+     * out-of-window samples.
+     */
+    private val _calibrationSamples = MutableSharedFlow<CalibrationRunner.CalibrationSample>(
+        replay = 0, extraBufferCapacity = 8,
+    )
+    val calibrationSamples: SharedFlow<CalibrationRunner.CalibrationSample> = _calibrationSamples.asSharedFlow()
+    val ftmsBridge = FtmsBridge(
+        context = appContext,
+        ergCtrl = ergCtrl,
+        onSetResistance = { level -> runCatching { bikeClient.setResistance(level) } },
+    )
 
     init {
         scope.launch {
@@ -86,6 +119,35 @@ class RideRepository private constructor(private val appContext: Context) {
                 }
             }
         }
+        // Mirror FtmsBridge state into RideUiState so UI can show the toggle status.
+        scope.launch {
+            ftmsBridge.state.collect { s -> _state.update { it.copy(bridge = s) } }
+        }
+        // Observe the settings toggle: start/stop the bridge accordingly. The
+        // toggle is the only user surface for enabling FTMS; flipping it OFF
+        // mid-session immediately tears the bridge down.
+        scope.launch {
+            settings.bridgeEnabled.collect { enabled ->
+                if (enabled) ftmsBridge.start()
+                else ftmsBridge.stop()
+            }
+        }
+    }
+
+    // ===== PowerModel persistence =====
+
+    /** Lazy load on first need (rather than blocking RideRepository construction on DataStore). */
+    private suspend fun ensurePowerModelLoaded() {
+        if (powerModelLoaded) return
+        val blob = settings.powerModelBlob.first()
+        if (!blob.isNullOrBlank()) {
+            powerModel.replaceWith(PowerModel.fromBlob(blob))
+        }
+        powerModelLoaded = true
+    }
+
+    private suspend fun persistPowerModel() {
+        runCatching { settings.setPowerModelBlob(powerModel.toBlob()) }
     }
 
     // ===== Auto-reconnect on link loss =====
@@ -115,8 +177,8 @@ class RideRepository private constructor(private val appContext: Context) {
         }
         scope.launch {
             // Pause the poll loop while we're disconnected — queryData() would
-            // fail every tick. We'll restart it once we're back if we were polling.
-            val wasPolling = pollJob != null
+            // fail every tick. We always restart it once we're back; polling is
+            // unconditional whenever the bike is connected.
             stopPolling()
             try {
                 // useAutoConnect = true → OS scanner re-attaches whenever the
@@ -128,7 +190,6 @@ class RideRepository private constructor(private val appContext: Context) {
                 val deviceId = settings.ensureDeviceId()
                 val weight = settings.weightKg.first()
                 runHandshake(bikeClient, userId, deviceId, weight).getOrThrow()
-                // Restore prior ride state + the polling loop if we were mid-ride.
                 _state.update {
                     it.copy(
                         state = priorState,
@@ -136,7 +197,7 @@ class RideRepository private constructor(private val appContext: Context) {
                         error = null,
                     )
                 }
-                if (wasPolling) startPolling()
+                startPolling()
             } catch (e: Exception) {
                 // Reconnect itself failed — drop back to IDLE so user can manually rescan.
                 runCatching { bikeClient.disconnect() }
@@ -209,6 +270,11 @@ class RideRepository private constructor(private val appContext: Context) {
                         deviceInfo = info,
                     )
                 }
+                // Begin polling as soon as we're connected — calibration wizard,
+                // pre-ride live tile, and FTMS bridge all need 1Hz TrainData
+                // before the user presses Start. Recording (builder.tick) is
+                // gated separately on RideState.TRAINING in startPolling().
+                startPolling()
             } catch (e: Exception) {
                 _state.update { it.copy(state = RideState.IDLE, error = "Connect: ${e.message}") }
                 runCatching { bikeClient.disconnect() }
@@ -254,10 +320,13 @@ class RideRepository private constructor(private val appContext: Context) {
                 secondsRecorded = 0,
                 lastFit = null,
                 lastFitSessionId = null,
+                lastDebugLog = null,
             ) }
+            if (settings.debugLogEnabled.first()) {
+                debugLogger.open(System.currentTimeMillis() / 1000L)
+            }
             runCatching { bikeClient.setStatus(TrainingStatus.TRAINING) }
             _state.update { it.copy(state = RideState.WAITING_KNOB) }
-            startPolling()
         }
     }
 
@@ -270,11 +339,51 @@ class RideRepository private constructor(private val appContext: Context) {
 
     fun stopRide() {
         scope.launch {
-            stopPolling()
             runCatching { bikeClient.setStatus(TrainingStatus.STOPPED) }
             runCatching { bikeClient.setStatus(TrainingStatus.IDLE) }
-            _state.update { it.copy(state = RideState.STOPPED) }
+            persistPowerModel()
+            debugLogger.close()
+            autoExportFit()
+            _state.update {
+                it.copy(
+                    state = RideState.STOPPED,
+                    lastDebugLog = debugLogger.lastLogFile,
+                )
+            }
         }
+    }
+
+    /**
+     * Run the FTMS calibration wizard. Suspends until done (or aborts on
+     * exception). Progress is mirrored into [RideUiState.calibration] for the
+     * UI to render. Persists PowerModel + calibration timestamp on success.
+     *
+     * Caller is responsible for ensuring the bike is connected and the user
+     * isn't mid-ride. Wizard explicitly drives `setResistance` on the bike.
+     */
+    suspend fun runCalibration() {
+        ensurePowerModelLoaded()
+        val runner = CalibrationRunner(
+            model = powerModel,
+            setLevel = { L -> runCatching { bikeClient.setResistance(L) } },
+            samples = calibrationSamples,
+        )
+        val mirror = scope.launch {
+            runner.progress.collect { p -> _state.update { it.copy(calibration = p) } }
+        }
+        try {
+            runner.run()
+            persistPowerModel()
+            runCatching { settings.setCalibratedAt(System.currentTimeMillis()) }
+        } finally {
+            mirror.cancel()
+            // Leave the terminal Done/Failed state in UI for a beat so the user
+            // sees the outcome; consumer can call resetCalibrationUi() later.
+        }
+    }
+
+    fun resetCalibrationUi() {
+        _state.update { it.copy(calibration = CalibrationRunner.Progress.Idle) }
     }
 
     fun setResistance(level: Int) {
@@ -287,14 +396,23 @@ class RideRepository private constructor(private val appContext: Context) {
     private fun startPolling() {
         stopPolling()
         pollJob = scope.launch {
+            ensurePowerModelLoaded()
+            // Wall-clock anchored ticker: each iteration sleeps until the next
+            // 1-second boundary from startNanos, so queryData latency doesn't
+            // accumulate drift over a long ride.
+            val startNanos = System.nanoTime()
+            var iteration = 0L
             while (isActive) {
                 runCatching {
                     val frame = bikeClient.queryData()
                     if (frame != null) {
                         val td = parseTrainData(frame.payload)
-                        builder.feedTrainData(td)
-                        builder.tick()
-                        _hrSeries.value = builder.hrSnapshot()
+                        val recording = _state.value.state == RideState.TRAINING
+
+                        // Always-update live tile so the UI feels alive even
+                        // outside TRAINING (CONNECTED, WAITING_KNOB, PAUSED,
+                        // STOPPED). Distance is bike-reported cumulative so it
+                        // makes sense regardless of recording state.
                         _state.update {
                             it.copy(
                                 live = it.live.copy(
@@ -303,20 +421,116 @@ class RideRepository private constructor(private val appContext: Context) {
                                     resistance = td.resistance?.toInt() ?: it.live.resistance,
                                     distanceM = td.distanceM?.toInt() ?: it.live.distanceM,
                                     calorieKcal = td.calorie?.toInt() ?: it.live.calorieKcal,
-                                    speedKmh = builder.lastSpeedKmh ?: it.live.speedKmh,
-                                    avgHrBpm = builder.avgHr ?: it.live.avgHrBpm,
-                                    maxHrBpm = builder.maxHr ?: it.live.maxHrBpm,
-                                    watt3s = builder.watt3s ?: it.live.watt3s,
-                                    avgWatt = builder.avgWatt ?: it.live.avgWatt,
                                 ),
-                                secondsRecorded = builder.secondsRecorded,
                             )
+                        }
+
+                        // Recording (per-second arrays + aggregates + secondsRecorded)
+                        // is gated on TRAINING. WAITING_KNOB / PAUSED don't append.
+                        if (recording) {
+                            builder.feedTrainData(td)
+                            builder.tick()
+                            _hrSeries.value = builder.hrSnapshot()
+                            _state.update {
+                                it.copy(
+                                    live = it.live.copy(
+                                        speedKmh = builder.lastSpeedKmh ?: it.live.speedKmh,
+                                        avgHrBpm = builder.avgHr ?: it.live.avgHrBpm,
+                                        maxHrBpm = builder.maxHr ?: it.live.maxHrBpm,
+                                        watt3s = builder.watt3s ?: it.live.watt3s,
+                                        avgWatt = builder.avgWatt ?: it.live.avgWatt,
+                                    ),
+                                    secondsRecorded = builder.secondsRecorded,
+                                )
+                            }
+                        }
+
+                        // ===== FTMS bridge tick (always-on) =====
+                        val live = _state.value.live
+                        val L = live.resistance
+                        val rpm = live.rpm ?: 0
+                        val watt = live.watt ?: 0
+                        if (recording && L != null && L in 1..PowerModel.NUM_LEVELS &&
+                            rpm > CalibrationRunner.MIN_RPM_FOR_FIT && watt > 0) {
+                            powerModel.feed(L, rpm, watt)
+                        }
+
+                        ftmsBridge.publish(live)
+
+                        val levelBefore = lastCommandedLevel
+                        runErgIfActive(live)
+
+                        _calibrationSamples.tryEmit(
+                            CalibrationRunner.CalibrationSample(rpm = rpm, watt = watt),
+                        )
+
+                        // ===== Debug logger (only during recording) =====
+                        if (recording && debugLogger.isOpen) {
+                            val sim = ergCtrl.currentSim
+                            val bridgeState = ftmsBridge.state.value
+                            debugLogger.writeTick(RideLogger.TickContext(
+                                unixS = System.currentTimeMillis() / 1000L,
+                                rideSecond = builder.secondsRecorded,
+                                td = td,
+                                hrBpm = builder.lastHrBpm,
+                                speedKmh = builder.lastSpeedKmh,
+                                speedModel = if (builder.debugMPerRpmSec != null) "rpm" else "delta",
+                                mPerRpmSec = builder.debugMPerRpmSec,
+                                sumRpm = builder.debugSumRpm,
+                                ergMode = when {
+                                    ergCtrl.currentTarget != null -> "erg"
+                                    sim != null -> "sim"
+                                    else -> null
+                                },
+                                ergGrade = sim?.gradePercent,
+                                ergTargetW = ergCtrl.currentTarget,
+                                ergPickedL = lastCommandedLevel,
+                                ergFallback = sim != null && !powerModel.isReady(),
+                                bridgeState = bridgeState::class.simpleName ?: "Unknown",
+                                bridgeClient = (bridgeState as? FtmsBridge.State.ClientConnected)?.deviceName,
+                                cmdResistance = if (lastCommandedLevel != levelBefore) lastCommandedLevel else null,
+                                cmdDedup = lastCommandedLevel == levelBefore && ergCtrl.isActive(),
+                            ))
                         }
                     }
                 }
-                delay(1000)
+                iteration++
+                val nextNanos = startNanos + iteration * 1_000_000_000L
+                val sleepMs = (nextNanos - System.nanoTime()) / 1_000_000
+                if (sleepMs > 0) delay(sleepMs) else delay(1)
             }
         }
+    }
+
+    /**
+     * If [ergCtrl] is active, pick the resistance level and write it to the
+     * bike — skipping if it matches the last level we already commanded.
+     *
+     * SIM mode works even without a calibrated [powerModel]: falls back to a
+     * direct grade→level linear mapping so Zwift route-riding is usable from
+     * the first ride. ERG mode still requires calibration.
+     */
+    private suspend fun runErgIfActive(live: RideUiState.LiveMetrics) {
+        if (!ergCtrl.isActive()) return
+
+        if (ergCtrl.currentSim != null && !powerModel.isReady()) {
+            val level = ErgController.simFallbackLevel(ergCtrl.currentSim!!)
+            if (level == lastCommandedLevel) return
+            lastCommandedLevel = level
+            runCatching { bikeClient.setResistance(level) }
+            return
+        }
+
+        if (!powerModel.isReady()) return  // ERG needs calibration
+        val rpm = live.rpm ?: return
+        if (rpm < CalibrationRunner.MIN_RPM_FOR_FIT) return
+        val weight = settings.weightKg.first()
+        val speedMps = (live.speedKmh ?: 0f) / 3.6f
+        val targetW = ergCtrl.effectiveTargetWatt(speedMps, weight) ?: return
+        val pickedL = powerModel.pickLevel(targetW, rpm) ?: return
+        if (pickedL == lastCommandedLevel) return
+        lastCommandedLevel = pickedL
+        runCatching { bikeClient.setResistance(pickedL) }
     }
 
     private fun stopPolling() {
@@ -327,45 +541,39 @@ class RideRepository private constructor(private val appContext: Context) {
     // ===== FIT export =====
 
     /**
-     * Build a FIT file from the accumulated ride asynchronously.
-     * When done, [RideUiState.lastFit] is set so the UI can share it.
+     * Auto-export FIT + persist to history DB. Called from [stopRide].
+     * Skips silently if no data was recorded (secondsRecorded == 0).
      */
-    fun exportFit() {
-        scope.launch {
-            _state.update { it.copy(state = RideState.EXPORTING) }
-            try {
-                val ride = builder.build()
-                val outDir = File(appContext.filesDir, "ride_exports").apply { mkdirs() }
-                val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-                    .format(Date(ride.startTimeUnixS * 1000L))
-                val out = File(outDir, "peek_ride_$stamp.fit")
-                FitWriter.write(ride, out)
+    private suspend fun autoExportFit() {
+        if (builder.secondsRecorded == 0) return
+        try {
+            val ride = builder.build()
+            val outDir = File(appContext.filesDir, "ride_exports").apply { mkdirs() }
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+                .format(Date(ride.startTimeUnixS * 1000L))
+            val out = File(outDir, "peek_ride_$stamp.fit")
+            FitWriter.write(ride, out)
 
-                // Persist a row in the history DB. Best-effort — if Room write
-                // fails the FIT is still on disk and the user can grab it via
-                // the share intent from SessionScreen.
-                val sessionId = runCatching {
-                    rideDao.insert(
-                        RideSessionEntity(
-                            startTimeUnixS = ride.startTimeUnixS,
-                            durationS = ride.durationS,
-                            distanceM = ride.totalDistanceM,
-                            calorie = ride.totalCalorie,
-                            avgWatt = builder.avgWatt,
-                            avgHrBpm = builder.avgHr,
-                            maxHrBpm = builder.maxHr,
-                            fitFilePath = out.absolutePath,
-                        )
+            val sessionId = runCatching {
+                rideDao.insert(
+                    RideSessionEntity(
+                        startTimeUnixS = ride.startTimeUnixS,
+                        durationS = ride.durationS,
+                        distanceM = ride.totalDistanceM,
+                        calorie = ride.totalCalorie,
+                        avgWatt = builder.avgWatt,
+                        avgHrBpm = builder.avgHr,
+                        maxHrBpm = builder.maxHr,
+                        fitFilePath = out.absolutePath,
                     )
-                }.getOrNull()
+                )
+            }.getOrNull()
 
-                _state.update {
-                    it.copy(state = RideState.STOPPED, lastFit = out, lastFitSessionId = sessionId)
-                }
-                // No auto-upload: user opts in per-session from SessionScreen or HistoryScreen.
-            } catch (e: Exception) {
-                _state.update { it.copy(state = RideState.STOPPED, error = "Export: ${e.message}") }
+            _state.update {
+                it.copy(lastFit = out, lastFitSessionId = sessionId)
             }
+        } catch (e: Exception) {
+            _state.update { it.copy(error = "Export: ${e.message}") }
         }
     }
 

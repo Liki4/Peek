@@ -21,6 +21,8 @@
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- BLE peripheral mode for the FTMS bridge that re-broadcasts the bike to Zwift / Mywhoosh. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
     <!-- Foreground service for the 1 Hz ride poll loop + HR notifies -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

@@ -1,5 +1,7 @@
 package io.github.liki4.peek.ride
 
+import io.github.liki4.peek.ftms.CalibrationRunner
+import io.github.liki4.peek.ftms.FtmsBridge
 import io.github.liki4.peek.protocol.DeviceInfo
 import java.io.File
 
@@ -51,6 +53,7 @@ data class RideUiState(
      * SessionScreen uses this to drive the "upload to Strava" button against the row we just inserted.
      */
     val lastFitSessionId: Long? = null,
+    val lastDebugLog: File? = null,
     /** Session id whose Strava upload is currently in flight, or null if none. */
     val uploadingSessionId: Long? = null,
     /**
@@ -58,6 +61,10 @@ data class RideUiState(
      * Persistent success is read from [io.github.liki4.peek.history.RideSessionEntity.stravaActivityId].
      */
     val uploadErrors: Map<Long, String> = emptyMap(),
+    /** Mirror of [FtmsBridge.state] — drives the Settings indicator + RideScreen badge. */
+    val bridge: FtmsBridge.State = FtmsBridge.State.Disabled,
+    /** Mirror of [CalibrationRunner.progress] — drives CalibrationScreen UI. */
+    val calibration: CalibrationRunner.Progress = CalibrationRunner.Progress.Idle,
 ) {
 
     data class ConnectedBike(val address: String, val name: String)

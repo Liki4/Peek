@@ -50,6 +50,11 @@ fun HrChart(
     showAxisLabels: Boolean = true,
 ) {
     val visible = sliceVisible(samples, windowSeconds)
+    // X axis denominator is the *window*, not the sample count — so a partly-
+    // filled chart anchors to the right and leaves the left blank instead of
+    // stretching a handful of points across the full width.
+    val axisSpan = windowSeconds ?: visible.size
+    val leftPad = (axisSpan - visible.size).coerceAtLeast(0)
 
     if (visible.isEmpty() || visible.all { it == 0 }) {
         EmptyState(modifier = modifier)
@@ -90,7 +95,10 @@ fun HrChart(
                     val frac = (bpm - yMin).toFloat() / (yMax - yMin).toFloat()
                     return h - frac.coerceIn(0f, 1f) * h
                 }
-                fun xFor(i: Int): Float = if (n == 1) 0f else w * i / (n - 1).toFloat()
+                // i ∈ [0, n) maps to axis position (leftPad + i) ∈ [0, axisSpan).
+                // Anchors sample[n-1] at the rightmost pixel.
+                val denom = (axisSpan - 1).coerceAtLeast(1).toFloat()
+                fun xFor(i: Int): Float = w * (leftPad + i).toFloat() / denom
 
                 // Build line segments split by zone changes.
                 // Walk samples; whenever the current sample's zone differs from
@@ -178,7 +186,7 @@ fun HrChart(
                 Text("$yMin bpm", style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
                 Text(
-                    text = windowLabel(visible.size),
+                    text = windowLabel(axisSpan),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp,
                 )

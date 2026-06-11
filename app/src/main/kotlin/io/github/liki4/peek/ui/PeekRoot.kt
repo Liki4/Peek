@@ -2,6 +2,7 @@ package io.github.liki4.peek.ui
 
 import android.app.Activity
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Surface
@@ -20,6 +21,7 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import io.github.liki4.peek.ride.RideForegroundService
 import io.github.liki4.peek.ride.RideRepository
 import io.github.liki4.peek.ride.RideState
+import io.github.liki4.peek.ui.screen.CalibrationScreen
 import io.github.liki4.peek.ui.screen.ConnectScreen
 import io.github.liki4.peek.ui.screen.HistoryScreen
 import io.github.liki4.peek.ui.screen.RideScreen
@@ -57,6 +59,7 @@ private fun AppContent() {
     val ui by repo.state.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
+    var showCalibration by remember { mutableStateOf(false) }
 
     // Foreground service is active whenever we hold a bike connection.
     LaunchedEffect(ui.bike?.address) {
@@ -86,13 +89,27 @@ private fun AppContent() {
         }
     }
 
+    if (showCalibration) {
+        BackHandler { showCalibration = false }
+        CalibrationScreen(onDone = { showCalibration = false })
+        return
+    }
+
     if (showHistory) {
+        BackHandler { showHistory = false }
         HistoryScreen(onBack = { showHistory = false })
         return
     }
 
     if (showSettings) {
-        SettingsScreen(onBack = { showSettings = false })
+        BackHandler { showSettings = false }
+        SettingsScreen(
+            onBack = { showSettings = false },
+            onOpenCalibration = {
+                showSettings = false
+                showCalibration = true
+            },
+        )
         return
     }
 

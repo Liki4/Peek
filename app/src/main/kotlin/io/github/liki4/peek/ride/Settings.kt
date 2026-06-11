@@ -3,9 +3,11 @@ package io.github.liki4.peek.ride
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -38,6 +40,11 @@ class Settings(private val context: Context) {
         val STRAVA_CLIENT_ID     = stringPreferencesKey("strava_client_id")
         val STRAVA_CLIENT_SECRET = stringPreferencesKey("strava_client_secret")
         val STRAVA_REFRESH_TOKEN = stringPreferencesKey("strava_refresh_token")
+        // FTMS bridge (Phase 2 #6) — toggle, calibrated PowerModel, last-calibration timestamp.
+        val BRIDGE_ENABLED       = booleanPreferencesKey("bridge_enabled")
+        val POWER_MODEL_BLOB     = stringPreferencesKey("power_model_blob")
+        val CALIBRATED_AT        = longPreferencesKey("calibrated_at")
+        val DEBUG_LOG_ENABLED    = booleanPreferencesKey("debug_log_enabled")
     }
 
     val userId:       Flow<String?> = context.peekDataStore.data.map { it[Keys.USER_ID] }
@@ -50,6 +57,10 @@ class Settings(private val context: Context) {
     val stravaClientId:     Flow<String?> = context.peekDataStore.data.map { it[Keys.STRAVA_CLIENT_ID] }
     val stravaClientSecret: Flow<String?> = context.peekDataStore.data.map { it[Keys.STRAVA_CLIENT_SECRET] }
     val stravaRefreshToken: Flow<String?> = context.peekDataStore.data.map { it[Keys.STRAVA_REFRESH_TOKEN] }
+    val bridgeEnabled:    Flow<Boolean> = context.peekDataStore.data.map { it[Keys.BRIDGE_ENABLED] ?: false }
+    val powerModelBlob:   Flow<String?> = context.peekDataStore.data.map { it[Keys.POWER_MODEL_BLOB] }
+    val calibratedAt:     Flow<Long?>   = context.peekDataStore.data.map { it[Keys.CALIBRATED_AT] }
+    val debugLogEnabled:  Flow<Boolean> = context.peekDataStore.data.map { it[Keys.DEBUG_LOG_ENABLED] ?: false }
 
     suspend fun setUserId(v: String)        = context.peekDataStore.edit { it[Keys.USER_ID]        = v }
     suspend fun setWeightKg(v: Float)       = context.peekDataStore.edit { it[Keys.WEIGHT_KG]      = v }
@@ -59,6 +70,10 @@ class Settings(private val context: Context) {
     suspend fun setStravaClientId(v: String)     = context.peekDataStore.edit { it[Keys.STRAVA_CLIENT_ID]     = v }
     suspend fun setStravaClientSecret(v: String) = context.peekDataStore.edit { it[Keys.STRAVA_CLIENT_SECRET] = v }
     suspend fun setStravaRefreshToken(v: String) = context.peekDataStore.edit { it[Keys.STRAVA_REFRESH_TOKEN] = v }
+    suspend fun setBridgeEnabled(v: Boolean)     = context.peekDataStore.edit { it[Keys.BRIDGE_ENABLED]      = v }
+    suspend fun setPowerModelBlob(v: String)     = context.peekDataStore.edit { it[Keys.POWER_MODEL_BLOB]    = v }
+    suspend fun setCalibratedAt(v: Long)         = context.peekDataStore.edit { it[Keys.CALIBRATED_AT]       = v }
+    suspend fun setDebugLogEnabled(v: Boolean)   = context.peekDataStore.edit { it[Keys.DEBUG_LOG_ENABLED]  = v }
 
     companion object {
         const val DEFAULT_MAX_HR = 190

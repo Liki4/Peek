@@ -16,6 +16,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import io.github.liki4.peek.ble.BikeScanner
 import io.github.liki4.peek.ble.DiscoveredBike
 import io.github.liki4.peek.ble.DiscoveredHrBelt
+import io.github.liki4.peek.ftms.FtmsBridge
 import io.github.liki4.peek.hr.HrBeltClient
 import io.github.liki4.peek.ride.RideRepository
 import io.github.liki4.peek.ride.RideState
@@ -54,7 +56,7 @@ import kotlinx.coroutines.launch
  *  - Profile: userId / weight / deviceId
  */
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onOpenCalibration: () -> Unit = {}) {
     val ctx = LocalContext.current
     val repo = remember { RideRepository.get(ctx) }
     val ui by repo.state.collectAsState()
@@ -77,6 +79,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         stravaClientSecret = repo.settings.stravaClientSecret.first().orEmpty()
         stravaRefreshToken = repo.settings.stravaRefreshToken.first().orEmpty()
     }
+    val bridgeEnabled by repo.settings.bridgeEnabled.collectAsState(initial = false)
+    val calibratedAt by repo.settings.calibratedAt.collectAsState(initial = null)
 
     Column(
         modifier = Modifier
@@ -123,6 +127,21 @@ fun SettingsScreen(onBack: () -> Unit) {
         )
 
         Spacer(Modifier.height(16.dp))
+        SectionTitle("外部训练平台 (FTMS)")
+        FtmsCard(
+            bridgeState = ui.bridge,
+            enabled = bridgeEnabled,
+            onToggle = { enabled ->
+                scope.launch {
+                    repo.settings.setBridgeEnabled(enabled)
+                    if (enabled && calibratedAt == null) onOpenCalibration()
+                }
+            },
+            calibratedAt = calibratedAt,
+            onRecalibrate = onOpenCalibration,
+        )
+
+        Spacer(Modifier.height(16.dp))
         SectionTitle("Strava 自动同步")
         StravaCard(
             clientId = stravaClientId,
@@ -141,6 +160,10 @@ fun SettingsScreen(onBack: () -> Unit) {
         )
 
         Spacer(Modifier.height(16.dp))
+        SectionTitle("调试")
+        DebugCard(repo = repo, scope = scope)
+
+        Spacer(Modifier.height(16.dp))
         Text(
             text = "动感单车不会校验 user ID — 只检查「会话有所有者」。" +
                 "持久化一个真 ID 是为了将来接云端同步时保持一致。\n\n" +
@@ -150,6 +173,33 @@ fun SettingsScreen(onBack: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun DebugCard(repo: RideRepository, scope: kotlinx.coroutines.CoroutineScope) {
+    val debugEnabled by repo.settings.debugLogEnabled.collectAsState(initial = false)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("调试日志", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "开启后骑行时逐秒记录全部遥测数据（JSONL）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = debugEnabled,
+                onCheckedChange = { enabled ->
+                    scope.launch { repo.settings.setDebugLogEnabled(enabled) }
+                },
+            )
+        }
     }
 }
 
@@ -199,6 +249,87 @@ private fun SectionTitle(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 }
+
+@Composable
+private fun FtmsCard(
+    bridgeState: FtmsBridge.State,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    calibratedAt: Long?,
+    onRecalibrate: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("把这台动感单车广播给 Zwift / Mywhoosh",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium)
+                    Text(bridgeStatusLine(bridgeState),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = bridgeStatusColor(bridgeState))
+                }
+                Switch(checked = enabled, onCheckedChange = onToggle)
+            }
+            if (bridgeState is FtmsBridge.State.Unsupported) {
+                Text(
+                    "本设备的蓝牙芯片不支持 BLE peripheral 模式，无法作为 FTMS 服务端。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("功率-档位 校准",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium)
+                    Text(
+                        if (calibratedAt != null) "上次校准：${formatTimestamp(calibratedAt)}"
+                        else "尚未校准 — ERG / SIM 模式需要校准后才能工作",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (calibratedAt != null) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.error,
+                    )
+                }
+                OutlinedButton(onClick = onRecalibrate) {
+                    Text(if (calibratedAt != null) "重新校准" else "立即校准")
+                }
+            }
+        }
+    }
+}
+
+private fun bridgeStatusLine(s: FtmsBridge.State): String = when (s) {
+    is FtmsBridge.State.Disabled        -> "未启用"
+    is FtmsBridge.State.Unsupported     -> "设备不支持"
+    is FtmsBridge.State.Starting        -> "启动中…"
+    is FtmsBridge.State.Advertising     -> "已广播 — 等待连接"
+    is FtmsBridge.State.ClientConnected -> "已连接：${s.deviceName}"
+    is FtmsBridge.State.Failed          -> "失败：${s.reason}"
+}
+
+@Composable
+private fun bridgeStatusColor(s: FtmsBridge.State) = when (s) {
+    is FtmsBridge.State.ClientConnected -> MaterialTheme.colorScheme.primary
+    is FtmsBridge.State.Failed, is FtmsBridge.State.Unsupported -> MaterialTheme.colorScheme.error
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+private fun formatTimestamp(unixMs: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(unixMs))
 
 @Composable
 private fun BikeDeviceCard(

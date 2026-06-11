@@ -24,7 +24,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.height
 import io.github.liki4.peek.ride.RideRepository
-import io.github.liki4.peek.ride.RideState
 import io.github.liki4.peek.ride.RideUiState
 import io.github.liki4.peek.ride.Settings as PeekSettings
 import io.github.liki4.peek.ui.component.HrChart
@@ -79,18 +78,7 @@ fun SessionScreen(
             }
         }
 
-        if (exportedFile == null) {
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = ui.state != RideState.EXPORTING,
-                onClick = { repo.exportFit() },
-            ) {
-                if (ui.state == RideState.EXPORTING) {
-                    CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.padding(end = 8.dp))
-                }
-                Text("导出 FIT")
-            }
-        } else {
+        if (exportedFile != null) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                     Text("已写入:", style = MaterialTheme.typography.labelSmall)
@@ -109,11 +97,23 @@ fun SessionScreen(
                             modifier = Modifier.weight(1f),
                             onClick = { shareFit(ctx, exportedFile) },
                         ) { Text("分享 FIT…") }
-                        Button(onClick = onReturnHome) { Text("完成") }
                     }
                 }
             }
         }
+
+        if (ui.lastDebugLog != null) {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { shareFit(ctx, ui.lastDebugLog!!) },
+            ) { Text("分享调试日志") }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onReturnHome,
+        ) { Text("完成") }
     }
 }
 

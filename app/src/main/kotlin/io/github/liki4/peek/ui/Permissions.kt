@@ -25,6 +25,10 @@ import com.google.accompanist.permissions.rememberMultiplePermissionsState
 private val REQUIRED_PERMISSIONS: List<String> = buildList {
     add(Manifest.permission.BLUETOOTH_SCAN)
     add(Manifest.permission.BLUETOOTH_CONNECT)
+    // BLUETOOTH_ADVERTISE is needed for the FTMS bridge (peripheral mode).
+    // We request it upfront so the toggle in Settings doesn't have to deal with
+    // its own permission dance — same scope as scan/connect, same prompt batch.
+    add(Manifest.permission.BLUETOOTH_ADVERTISE)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.POST_NOTIFICATIONS)
     }

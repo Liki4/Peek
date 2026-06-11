@@ -8,12 +8,16 @@ import org.junit.Test
 import kotlin.math.abs
 
 /**
- * Behavioural tests for the per-ride accumulator + power-based speed model.
+ * Behavioural tests for the per-ride accumulator + rpm-based speed model.
  *
  * Calibration property under test:
- *   v_t = (P_t / K)^(1/3)  with  K^(1/3) = Σ P_t^(1/3) / D
+ *   v_t = metersPerRpmSec · rpm_t · 3.6   with  metersPerRpmSec = D / Σrpm
  *   ⇒ integrated speed (Σ v_t · dt) equals the bike's reported cumulative
  *     distance D, exactly (up to float rounding).
+ *
+ * Per the CC_23 physics: each rpm advances a fixed virtual distance regardless
+ * of resistance level — the bike models a single-gear road bike, with
+ * resistance translating to grade not gear.
  */
 class RideDataBuilderTest {
 
@@ -39,28 +43,51 @@ class RideDataBuilderTest {
     )
 
     @Test
-    fun `power-based speed integrates back to reported distance`() {
-        // 60-second ride with power varying ±50% and distance accumulating
-        // at the rate implied by v = (P/K_true)^(1/3) with K_true = 0.5.
+    fun `rpm-based speed integrates back to reported distance`() {
+        // 60-second ride with rpm varying 60..100 and distance accumulating
+        // at the rate implied by v = mPerRpmSec_true · rpm.
         val builder = RideDataBuilder()
-        val powers = IntArray(60) { i -> 100 + (i % 7) * 20 } // 100..220 W
-        val kTrueCbrt = Math.cbrt(0.5)
+        val rpms = IntArray(60) { i -> 70 + (i % 5) * 6 } // 70..94 rpm
+        val mPerRpmSecTrue = 0.13 // ~28 km/h at 60 rpm; plausible for indoor virtual gearing
         var d = 0.0
         for (i in 0 until 60) {
-            val v = Math.cbrt(powers[i].toDouble()) / kTrueCbrt
+            val v = mPerRpmSecTrue * rpms[i]
             d += v
-            builder.feedTrainData(td(distanceM = d.toInt(), durationS = i + 1, watt = powers[i]))
+            builder.feedTrainData(td(distanceM = d.toInt(), durationS = i + 1, rpm = rpms[i]))
             builder.tick()
         }
         val ride = builder.build()
         val integrated = ride.speedKmh.filterNotNull().sumOf { (it / 3.6).toDouble() }
-        // Cumulative distance the bike reported.
         val reported = ride.totalDistanceM!!.toDouble()
         // Allow 1 % drift — int-rounded distanceM loses a fraction per second.
         assertTrue(
             "integrated $integrated should track reported $reported within 1%",
             abs(integrated - reported) / reported < 0.01,
         )
+    }
+
+    @Test
+    fun `speed is independent of resistance at same rpm`() {
+        // Two rides at the same cadence but different resistance should produce
+        // the same speed. This is the core physics insight: resistance changes
+        // wattage but not virtual ground speed on this bike.
+        val rpm = 80
+        fun runRide(level: Int, watt: Int): Float {
+            val b = RideDataBuilder()
+            var d = 0.0
+            for (i in 0 until 30) {
+                d += 0.13 * rpm
+                b.feedTrainData(td(distanceM = d.toInt(), durationS = i + 1,
+                    rpm = rpm, resistance = level, watt = watt))
+                b.tick()
+            }
+            return b.build().speedKmh.last()!!
+        }
+        val low = runRide(level = 3, watt = 80)
+        val high = runRide(level = 15, watt = 280)
+        // Same rpm → same speed regardless of level/watts (within float noise).
+        assertTrue("low=$low high=$high should match within 0.5 km/h",
+            abs(low - high) < 0.5f)
     }
 
     @Test
