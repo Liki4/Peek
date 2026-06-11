@@ -42,7 +42,7 @@ jobs:
       - name: Rename APK
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          mv app/build/outputs/apk/release/app-release-signed.apk "app/build/outputs/apk/release/peek-${TAG}.apk"
+          mv "${{ steps.sign.outputs.signedReleaseFile }}" "app/build/outputs/apk/release/peek-${TAG}.apk"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
