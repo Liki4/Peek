@@ -26,6 +26,7 @@ import io.github.liki4.peek.ride.RideUiState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -80,6 +81,9 @@ class FtmsBridge(
     private var controlPointChar: BluetoothGattCharacteristic? = null
     private var statusChar: BluetoothGattCharacteristic? = null
 
+    /** Set by onServiceAdded; cleared on stop. */
+    @Volatile private var serviceAdded = false
+
     /** address → set of characteristic UUIDs the device has CCCD-subscribed to. */
     private val subscriptions = ConcurrentHashMap<String, MutableSet<UUID>>()
 
@@ -107,14 +111,10 @@ class FtmsBridge(
             _state.value = State.Failed("bluetooth not enabled")
             return Result.failure(IllegalStateException("bluetooth not enabled"))
         }
-        val adv = adapter.bluetoothLeAdvertiser
-        if (adv == null) {
-            _state.value = State.Unsupported
-            return Result.failure(IllegalStateException("device does not support BLE advertising"))
-        }
-        advertiser = adv
 
         _state.value = State.Starting
+        serviceAdded = false
+
         // 1. Open GATT server + register service
         val srv = btManager.openGattServer(context, serverCallback)
             ?: run {
@@ -122,21 +122,22 @@ class FtmsBridge(
                 return Result.failure(IllegalStateException("openGattServer returned null"))
             }
         server = srv
-        srv.addService(buildFtmsService())
-
-        // 2. Start advertising the FTMS service UUID. The connectable settings
-        //    + service-UUID in payload are what Zwift's scanner keys on.
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-            .setConnectable(true)
-            .setTimeout(0)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
-            .build()
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
-            .addServiceUuid(ParcelUuid(FtmsConstants.SERVICE_FITNESS_MACHINE))
-            .build()
-        adv.startAdvertising(settings, data, advertiseCallback)
+        val ok = srv.addService(buildFtmsService())
+        if (!ok) {
+            Log.w(TAG, "addService returned false — GATT server rejected the service")
+            _state.value = State.Failed("addService rejected")
+            return Result.failure(IllegalStateException("addService returned false"))
+        }
+        // Advertising starts in onServiceAdded after the service is confirmed
+        // registered.  If the callback never fires (some ROMs), a 2-second
+        // timeout fallback still kicks off advertising.
+        scope.launch {
+            delay(2000)
+            if (!serviceAdded && _state.value is State.Starting) {
+                Log.w(TAG, "onServiceAdded never fired; starting advertising anyway")
+                beginAdvertising()
+            }
+        }
         return Result.success(Unit)
     }
 
@@ -157,10 +158,33 @@ class FtmsBridge(
         indoorBikeChar = null
         controlPointChar = null
         statusChar = null
+        serviceAdded = false
         subscriptions.clear()
         connectedDevices.clear()
         ergCtrl.reset()
         _state.value = State.Disabled
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun beginAdvertising() {
+        val adapter = btManager.adapter ?: return
+        val adv = adapter.bluetoothLeAdvertiser
+        if (adv == null) {
+            _state.value = State.Unsupported
+            return
+        }
+        advertiser = adv
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            .setConnectable(true)
+            .setTimeout(0)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .build()
+        val data = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .addServiceUuid(ParcelUuid(FtmsConstants.SERVICE_FITNESS_MACHINE))
+            .build()
+        adv.startAdvertising(settings, data, advertiseCallback)
     }
 
     /**
@@ -203,6 +227,17 @@ class FtmsBridge(
                                    else _state.value
                     Log.i(TAG, "client disconnected: $addr")
                 }
+            }
+        }
+
+        override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+            serviceAdded = status == BluetoothGatt.GATT_SUCCESS
+            if (serviceAdded) {
+                Log.i(TAG, "FTMS service registered successfully")
+                beginAdvertising()
+            } else {
+                Log.w(TAG, "onServiceAdded failed with status $status")
+                _state.value = State.Failed("service registration failed (status $status)")
             }
         }
 

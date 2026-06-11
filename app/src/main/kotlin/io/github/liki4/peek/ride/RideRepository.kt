@@ -73,6 +73,14 @@ class RideRepository private constructor(private val appContext: Context) {
 
     private var pollJob: Job? = null
 
+    // The CC_23 runs a ~4-5 s countdown after the knob is pressed before it
+    // starts logging.  The original Keep app shows a 3-2-1-GO overlay for the
+    // same duration.  We mirror that with a fixed 4-second wall-clock delay
+    // after receiving the TRAINING push — no dependency on pedaling.
+    // Displayed time still comes from the bike's own `durationS` (see poll
+    // loop), so sub-second start misalignment doesn't accumulate.
+    @Volatile private var countdownUntilNanos = 0L
+
     // ===== FTMS bridge state =====
     //
     // PowerModel is loaded lazily from settings.powerModelBlob on first ride
@@ -216,15 +224,51 @@ class RideRepository private constructor(private val appContext: Context) {
 
     // ===== Push routing =====
 
-    private fun handlePush(frame: KeepFrame) {
+    private suspend fun handlePush(frame: KeepFrame) {
         when (frame.route) {
             "106/4" -> {
                 val ts = parseTrainingStatus(frame.payload)
-                // User pressed knob → bike pushes TRAINING.
+                // changedByDevice=1 → the user pressed the physical knob.
+                // This is the bike telling us "I'm training now" regardless of
+                // whether the app sent a start command first. Handle it from any
+                // pre-ride state:
+                //   WAITING_KNOB → app already set up builder; just flip state.
+                //   CONNECTED    → user pressed knob directly; set up recording.
                 if (ts.status == TrainingStatus.TRAINING.wire.toLong() &&
-                    _state.value.state == RideState.WAITING_KNOB
+                    ts.changedByDevice == 1L &&
+                    _state.value.state != RideState.TRAINING
                 ) {
-                    _state.update { it.copy(state = RideState.TRAINING) }
+                    when (_state.value.state) {
+                        RideState.WAITING_KNOB -> {
+                            _state.update { it.copy(state = RideState.TRAINING) }
+                        }
+                        RideState.CONNECTED -> {
+                            beginRecording()
+                            _state.update { it.copy(state = RideState.TRAINING) }
+                        }
+                        RideState.PAUSED -> {
+                            _state.update { it.copy(state = RideState.TRAINING) }
+                        }
+                        else -> {} // RECONNECTING / STOPPED — irrelevant
+                    }
+                }
+                // Bike pushes PAUSED when the user presses the knob during
+                // training — honor it the same way we handle the UI pause button.
+                if (ts.status == TrainingStatus.PAUSED.wire.toLong() &&
+                    ts.changedByDevice == 1L &&
+                    _state.value.state == RideState.TRAINING
+                ) {
+                    _state.update { it.copy(state = RideState.PAUSED) }
+                }
+                // Bike pushes STOPPED when the user long-presses the knob to end
+                // the session — run the full stop flow (persist power model,
+                // close debug log, auto-export FIT). The user lands on
+                // SessionScreen with the "Upload to Strava" button.
+                if (ts.status == TrainingStatus.STOPPED.wire.toLong() &&
+                    ts.changedByDevice == 1L &&
+                    _state.value.state in setOf(RideState.TRAINING, RideState.PAUSED)
+                ) {
+                    endRecording()
                 }
             }
             "106/6" -> {
@@ -311,20 +355,30 @@ class RideRepository private constructor(private val appContext: Context) {
 
     // ===== Ride control =====
 
+    /** Shared setup for both app-initiated and bike-initiated ride starts. */
+    private suspend fun beginRecording() {
+        builder.reset()
+        // 4-second wall-clock countdown — mirrors the Keep app's 3-2-1-GO
+        // overlay. The bike has its own internal countdown of ~4-5 s; after
+        // both expire, the bike's `durationS` field is the authoritative
+        // elapsed time (used for UI display in the poll loop).
+        countdownUntilNanos = System.nanoTime() + 4_000_000_000L
+        _hrSeries.value = IntArray(0)
+        _state.update { it.copy(
+            live = RideUiState.LiveMetrics(),
+            secondsRecorded = 0,
+            lastFit = null,
+            lastFitSessionId = null,
+            lastDebugLog = null,
+        ) }
+        if (settings.debugLogEnabled.first()) {
+            debugLogger.open(System.currentTimeMillis() / 1000L)
+        }
+    }
+
     fun startRide() {
         scope.launch {
-            builder.reset()
-            _hrSeries.value = IntArray(0)
-            _state.update { it.copy(
-                live = RideUiState.LiveMetrics(),
-                secondsRecorded = 0,
-                lastFit = null,
-                lastFitSessionId = null,
-                lastDebugLog = null,
-            ) }
-            if (settings.debugLogEnabled.first()) {
-                debugLogger.open(System.currentTimeMillis() / 1000L)
-            }
+            beginRecording()
             runCatching { bikeClient.setStatus(TrainingStatus.TRAINING) }
             _state.update { it.copy(state = RideState.WAITING_KNOB) }
         }
@@ -341,15 +395,25 @@ class RideRepository private constructor(private val appContext: Context) {
         scope.launch {
             runCatching { bikeClient.setStatus(TrainingStatus.STOPPED) }
             runCatching { bikeClient.setStatus(TrainingStatus.IDLE) }
-            persistPowerModel()
-            debugLogger.close()
-            autoExportFit()
-            _state.update {
-                it.copy(
-                    state = RideState.STOPPED,
-                    lastDebugLog = debugLogger.lastLogFile,
-                )
-            }
+            endRecording()
+        }
+    }
+
+    /**
+     * Shared end-of-ride logic: persist power model, close debug log,
+     * auto-export FIT → Room insert, and transition to STOPPED state.
+     * Called both when the app stops the ride and when the bike long-presses
+     * the knob to end the session independently.
+     */
+    private suspend fun endRecording() {
+        persistPowerModel()
+        debugLogger.close()
+        autoExportFit()
+        _state.update {
+            it.copy(
+                state = RideState.STOPPED,
+                lastDebugLog = debugLogger.lastLogFile,
+            )
         }
     }
 
@@ -427,21 +491,32 @@ class RideRepository private constructor(private val appContext: Context) {
 
                         // Recording (per-second arrays + aggregates + secondsRecorded)
                         // is gated on TRAINING. WAITING_KNOB / PAUSED don't append.
+                        // A fixed 4-second countdown runs first so the app's
+                        // first tick lands close to the bike's own countdown end.
                         if (recording) {
-                            builder.feedTrainData(td)
-                            builder.tick()
-                            _hrSeries.value = builder.hrSnapshot()
-                            _state.update {
-                                it.copy(
-                                    live = it.live.copy(
-                                        speedKmh = builder.lastSpeedKmh ?: it.live.speedKmh,
-                                        avgHrBpm = builder.avgHr ?: it.live.avgHrBpm,
-                                        maxHrBpm = builder.maxHr ?: it.live.maxHrBpm,
-                                        watt3s = builder.watt3s ?: it.live.watt3s,
-                                        avgWatt = builder.avgWatt ?: it.live.avgWatt,
-                                    ),
-                                    secondsRecorded = builder.secondsRecorded,
-                                )
+                            val inCountdown = System.nanoTime() < countdownUntilNanos
+                            if (!inCountdown) {
+                                builder.feedTrainData(td)
+                                builder.tick()
+                                _hrSeries.value = builder.hrSnapshot()
+                                _state.update {
+                                    it.copy(
+                                        live = it.live.copy(
+                                            speedKmh = builder.lastSpeedKmh ?: it.live.speedKmh,
+                                            avgHrBpm = builder.avgHr ?: it.live.avgHrBpm,
+                                            maxHrBpm = builder.maxHr ?: it.live.maxHrBpm,
+                                            watt3s = builder.watt3s ?: it.live.watt3s,
+                                            avgWatt = builder.avgWatt ?: it.live.avgWatt,
+                                        ),
+                                        // Use the bike's own durationS as the
+                                        // displayed time so the app's clock stays
+                                        // in sync with the bike's display even
+                                        // if our poll loop occasionally skips a
+                                        // tick (BLE congestion, reconnect, etc.).
+                                        secondsRecorded = td.durationS?.toInt()
+                                            ?: builder.secondsRecorded,
+                                    )
+                                }
                             }
                         }
 
