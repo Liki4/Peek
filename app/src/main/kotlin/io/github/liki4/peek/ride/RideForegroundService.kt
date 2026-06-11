@@ -13,7 +13,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -31,7 +30,6 @@ import kotlinx.coroutines.launch
 class RideForegroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var observerJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -46,7 +44,7 @@ class RideForegroundService : Service() {
         }
         // Update notification text as ride state changes.
         val repo = RideRepository.get(this)
-        observerJob = scope.launch {
+        scope.launch {
             repo.state
                 .map { ui -> notifText(ui) }
                 .distinctUntilChanged()

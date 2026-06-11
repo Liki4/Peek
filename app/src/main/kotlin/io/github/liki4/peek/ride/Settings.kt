@@ -90,11 +90,13 @@ class Settings(private val context: Context) {
 
     /** Read [Keys.DEVICE_ID], generating one if it's not set yet. Returns the value either way. */
     suspend fun ensureDeviceId(): String {
-        val updated = context.peekDataStore.edit { prefs ->
+        context.peekDataStore.edit { prefs ->
             if (prefs[Keys.DEVICE_ID].isNullOrEmpty()) {
                 prefs[Keys.DEVICE_ID] = UUID.randomUUID().toString().replace("-", "").take(16)
             }
         }
-        return updated[Keys.DEVICE_ID]!!
+        // Read freshly after edit completes — avoids depending on DataStore's
+        // edit-return-value semantics.
+        return context.peekDataStore.data.first()[Keys.DEVICE_ID]!!
     }
 }

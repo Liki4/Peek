@@ -39,6 +39,7 @@ import io.github.liki4.peek.ride.RideState
 import io.github.liki4.peek.ride.RideUiState
 import io.github.liki4.peek.ride.Settings as PeekSettings
 import io.github.liki4.peek.ui.component.HrChart
+import io.github.liki4.peek.ui.formatDuration
 
 /**
  * Live ride screen — iGPSPORT-inspired layout.
@@ -447,10 +448,3 @@ private fun ControlBar(ui: RideUiState, repo: RideRepository) {
 }
 
 private val HrColor = Color(0xFFE53935)
-
-private fun formatDuration(sec: Int): String {
-    val h = sec / 3600
-    val m = (sec % 3600) / 60
-    val s = sec % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
-}

@@ -1,6 +1,5 @@
 package io.github.liki4.peek.ui.screen
 
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,13 +20,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.height
 import io.github.liki4.peek.ride.RideRepository
 import io.github.liki4.peek.ride.RideUiState
 import io.github.liki4.peek.ride.Settings as PeekSettings
 import io.github.liki4.peek.ui.component.HrChart
-import java.io.File
+import io.github.liki4.peek.ui.formatDuration
+import io.github.liki4.peek.ui.shareFit
 
 @Composable
 fun SessionScreen(
@@ -163,16 +162,6 @@ fun StravaUploadCell(
     }
 }
 
-private fun shareFit(ctx: android.content.Context, file: File) {
-    val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "application/octet-stream"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    ctx.startActivity(Intent.createChooser(send, "Share FIT to…"))
-}
-
 @Composable
 private fun SummaryRow(label: String, value: String) {
     Row(
@@ -182,11 +171,4 @@ private fun SummaryRow(label: String, value: String) {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyLarge)
     }
-}
-
-private fun formatDuration(sec: Int): String {
-    val h = sec / 3600
-    val m = (sec % 3600) / 60
-    val s = sec % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }

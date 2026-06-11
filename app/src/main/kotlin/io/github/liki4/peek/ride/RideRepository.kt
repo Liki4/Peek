@@ -503,6 +503,7 @@ class RideRepository private constructor(private val appContext: Context) {
             // accumulate drift over a long ride.
             val startNanos = System.nanoTime()
             var iteration = 0L
+            var consecutiveFailures = 0
             while (isActive) {
                 runCatching {
                     val frame = bikeClient.queryData()
@@ -604,6 +605,13 @@ class RideRepository private constructor(private val appContext: Context) {
                                 cmdDedup = lastCommandedLevel == levelBefore && ergCtrl.isActive(),
                             ))
                         }
+                    }
+                }.onSuccess {
+                    consecutiveFailures = 0
+                }.onFailure { e ->
+                    consecutiveFailures++
+                    if (consecutiveFailures % 30 == 1) {
+                        Log.w(TAG, "poll tick failed ${consecutiveFailures}x (last: ${e.message})", e)
                     }
                 }
                 iteration++
