@@ -9,6 +9,11 @@ import java.nio.ByteOrder
  * Holds per-direction monotonic counters (packetCount, seq, subSeq) that must
  * persist across calls; reset on disconnect by reinstantiating.
  *
+ * **Thread-safety**: this class is NOT thread-safe. All calls to [build] must
+ * be serialized by the caller (e.g. confined to a single coroutine). The
+ * counters are NOT atomic — concurrent builds would produce duplicate subSeq
+ * values and corrupt request/response correlation.
+ *
  * @see PROTOCOL.md §3 for the byte layout.
  */
 class KeepPacket(initialSeq: Int = 0x3678) {

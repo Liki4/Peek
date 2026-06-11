@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import no.nordicsemi.android.ble.observer.ConnectionObserver
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -128,6 +129,6 @@ class HrBeltClient(context: Context) {
             onValue = { batteryFlow.value = it },
             done = { def.complete(Unit) },
         )
-        def.await()
+        withTimeoutOrNull(3000) { def.await() }
     }
 }

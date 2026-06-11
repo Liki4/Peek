@@ -81,6 +81,10 @@ class RideRepository private constructor(private val appContext: Context) {
     // loop), so sub-second start misalignment doesn't accumulate.
     @Volatile private var countdownUntilNanos = 0L
 
+    // Guard against the disconnect callback racing with disconnectBike().
+    // If the user explicitly disconnected we must not auto-reconnect.
+    @Volatile private var explicitDisconnect = false
+
     // ===== FTMS bridge state =====
     //
     // PowerModel is loaded lazily from settings.powerModelBlob on first ride
@@ -177,6 +181,7 @@ class RideRepository private constructor(private val appContext: Context) {
         // disconnectBike() already cleared bike + state. Nothing to do.
         val bike = cur.bike ?: return
         if (cur.state == RideState.RECONNECTING) return  // already in flight
+        if (explicitDisconnect) return  // user-initiated: don't auto-reconnect
         if (!shouldAutoReconnect(reason)) return
 
         val priorState = cur.state
@@ -328,9 +333,11 @@ class RideRepository private constructor(private val appContext: Context) {
 
     fun disconnectBike() {
         scope.launch {
+            explicitDisconnect = true
             stopPolling()
             runCatching { bikeClient.disconnect() }
             _state.update { it.copy(state = RideState.IDLE, bike = null, deviceInfo = null) }
+            explicitDisconnect = false
         }
     }
 
@@ -388,6 +395,19 @@ class RideRepository private constructor(private val appContext: Context) {
         scope.launch {
             runCatching { bikeClient.setStatus(TrainingStatus.PAUSED) }
             _state.update { it.copy(state = RideState.PAUSED) }
+        }
+    }
+
+    /**
+     * Resume from PAUSED without resetting accumulated ride data.
+     * Sends PUT 106/4 status=TRAINING to the bike (same as the Keep app
+     * does on resume) and transitions directly back to TRAINING — no
+     * second knob-press or countdown cycle.
+     */
+    fun resumeRide() {
+        scope.launch {
+            runCatching { bikeClient.setStatus(TrainingStatus.TRAINING) }
+            _state.update { it.copy(state = RideState.TRAINING) }
         }
     }
 

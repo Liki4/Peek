@@ -426,7 +426,7 @@ private fun ControlBar(ui: RideUiState, repo: RideRepository) {
             }
             RideState.PAUSED -> {
                 Button(
-                    onClick = { repo.startRide() },
+                    onClick = { repo.resumeRide() },
                     modifier = Modifier.weight(1f).padding(end = 4.dp),
                 ) { Text("继续") }
                 FilledTonalButton(
