@@ -23,6 +23,7 @@ fun formatDuration(sec: Int): String {
 
 /** Open the system share sheet for a FIT file via [FileProvider]. */
 fun shareFit(ctx: Context, file: File) {
+    if (!file.exists()) return
     val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "application/octet-stream"
