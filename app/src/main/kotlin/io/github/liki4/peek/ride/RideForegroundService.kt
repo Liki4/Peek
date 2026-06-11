@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -57,7 +58,7 @@ class RideForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        observerJob?.cancel()
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -75,6 +76,12 @@ class RideForegroundService : Service() {
      * recording), but explicitly swiping the app away = full exit. Tear down
      * the bike + HR connections, stop the foreground service, and kill our own
      * process so nothing lingers.
+     *
+     * disconnectBike()/disconnectHr() are fire-and-forget (scope.launch), so we
+     * can't guarantee they complete before killProcess(). The brief sleep gives
+     * the coroutines a chance to enqueue BLE disconnect commands. Even if we
+     * miss it, the BLE stack's link-layer supervision timeout (~3-6 s) will
+     * eventually tear down the physical connection.
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
@@ -83,10 +90,10 @@ class RideForegroundService : Service() {
             repo.disconnectBike()
             repo.disconnectHr()
         }
+        // Give BLE disconnect coroutines a brief window to enqueue.
+        Thread.sleep(300)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
-        // Process exit. The Activity should already be gone (task removed),
-        // but if anything else is hanging on this matches the user's intent.
         android.os.Process.killProcess(android.os.Process.myPid())
     }
 

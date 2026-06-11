@@ -84,6 +84,14 @@ class FtmsBridge(
     /** Set by onServiceAdded; cleared on stop. */
     @Volatile private var serviceAdded = false
 
+    /**
+     * Incremented on every [start] call. The 2-second timeout coroutine captures
+     * the generation at launch time; only the latest generation is allowed to
+     * call beginAdvertising(). This prevents a stale timeout from a previous
+     * start() from acting after a rapid off→on→off→on toggle sequence.
+     */
+    @Volatile private var startGeneration = 0
+
     /** address → set of characteristic UUIDs the device has CCCD-subscribed to. */
     private val subscriptions = ConcurrentHashMap<String, MutableSet<UUID>>()
 
@@ -114,6 +122,7 @@ class FtmsBridge(
 
         _state.value = State.Starting
         serviceAdded = false
+        startGeneration++  // invalidate any stale timeout from a previous start()
 
         // 1. Open GATT server + register service
         val srv = btManager.openGattServer(context, serverCallback)
@@ -132,7 +141,9 @@ class FtmsBridge(
         // registered.  If the callback never fires (some ROMs), a 2-second
         // timeout fallback still kicks off advertising.
         scope.launch {
+            val capturedGen = startGeneration
             delay(2000)
+            if (capturedGen != startGeneration) return@launch  // stale
             if (!serviceAdded && _state.value is State.Starting) {
                 Log.w(TAG, "onServiceAdded never fired; starting advertising anyway")
                 beginAdvertising()

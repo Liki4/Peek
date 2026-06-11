@@ -65,13 +65,20 @@ class KeepBleManager(
         enableNotifications(charFF01).enqueue()
     }
 
-    /** Write one raw Keep packet via write-without-response. */
+    /** Write one raw Keep packet via write-without-response.
+     *
+     * @throws IllegalStateException if the characteristic is not ready (service
+     *   discovery not yet completed or services invalidated).
+     */
     fun writeBytes(bytes: ByteArray) {
         val c = charFF01 ?: error("KeepBleManager: char not ready (service not discovered)")
         writeCharacteristic(c, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
             .split()
             .enqueue()
     }
+
+    /** True once service discovery has completed and the char is ready for writes. */
+    val isCharReady: Boolean get() = charFF01 != null
 
     companion object {
         private const val TAG = "KeepBleManager"

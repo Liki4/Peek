@@ -3,6 +3,7 @@ package io.github.liki4.peek.protocol
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import android.util.Log
 
 /**
  * Schema-less protobuf encode + decode for the Keep wire layer.
@@ -12,6 +13,8 @@ import java.nio.ByteOrder
  * encode/decode by field number with the standard wire types.
  */
 object Protobuf {
+
+    private const val TAG = "Protobuf"
 
     // ============================== ENCODING ==============================
 
@@ -113,8 +116,10 @@ object Protobuf {
                     else -> break
                 }
             }
-        } catch (_: Exception) {
-            // best-effort decode
+        } catch (e: Exception) {
+            // Partial decode — log the position and total size so corrupted
+            // payloads leave a trace instead of silently producing incomplete data.
+            Log.w(TAG, "partial protobuf decode at pos $pos of ${b.size} bytes: ${e.message}")
         }
         return out
     }

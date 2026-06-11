@@ -1,6 +1,7 @@
 package io.github.liki4.peek.ride
 
 import android.content.Context
+import android.util.Log
 import io.github.liki4.peek.ble.KeepBikeClient
 import io.github.liki4.peek.ble.runHandshake
 import io.github.liki4.peek.fit.FitWriter
@@ -84,6 +85,13 @@ class RideRepository private constructor(private val appContext: Context) {
     // Guard against the disconnect callback racing with disconnectBike().
     // If the user explicitly disconnected we must not auto-reconnect.
     @Volatile private var explicitDisconnect = false
+
+    // Guard against double endRecording() — stopRide() and handlePush STOP
+    // run in separate coroutines and can race.
+    @Volatile private var recordingEnded = false
+
+    // Track the in-flight reconnect Job so disconnectBike() can cancel it.
+    private var reconnectJob: Job? = null
 
     // ===== FTMS bridge state =====
     //
@@ -188,7 +196,7 @@ class RideRepository private constructor(private val appContext: Context) {
         _state.update {
             it.copy(state = RideState.RECONNECTING, priorStateBeforeReconnect = priorState)
         }
-        scope.launch {
+        reconnectJob = scope.launch {
             // Pause the poll loop while we're disconnected — queryData() would
             // fail every tick. We always restart it once we're back; polling is
             // unconditional whenever the bike is connected.
@@ -213,6 +221,7 @@ class RideRepository private constructor(private val appContext: Context) {
                 startPolling()
             } catch (e: Exception) {
                 // Reconnect itself failed — drop back to IDLE so user can manually rescan.
+                Log.e(TAG, "reconnect failed", e)
                 runCatching { bikeClient.disconnect() }
                 _state.update {
                     it.copy(
@@ -220,9 +229,11 @@ class RideRepository private constructor(private val appContext: Context) {
                         bike = null,
                         deviceInfo = null,
                         priorStateBeforeReconnect = null,
-                        error = "Reconnect failed: ${e.message}",
+                        error = "Reconnect failed: ${e::class.simpleName}: ${e.message}",
                     )
                 }
+            } finally {
+                reconnectJob = null
             }
         }
     }
@@ -325,7 +336,8 @@ class RideRepository private constructor(private val appContext: Context) {
                 // gated separately on RideState.TRAINING in startPolling().
                 startPolling()
             } catch (e: Exception) {
-                _state.update { it.copy(state = RideState.IDLE, error = "Connect: ${e.message}") }
+                Log.e(TAG, "connect failed", e)
+                _state.update { it.copy(state = RideState.IDLE, error = "Connect: ${e::class.simpleName}: ${e.message}") }
                 runCatching { bikeClient.disconnect() }
             }
         }
@@ -333,6 +345,8 @@ class RideRepository private constructor(private val appContext: Context) {
 
     fun disconnectBike() {
         scope.launch {
+            reconnectJob?.cancel()
+            reconnectJob = null
             explicitDisconnect = true
             stopPolling()
             runCatching { bikeClient.disconnect() }
@@ -364,6 +378,7 @@ class RideRepository private constructor(private val appContext: Context) {
 
     /** Shared setup for both app-initiated and bike-initiated ride starts. */
     private suspend fun beginRecording() {
+        recordingEnded = false
         builder.reset()
         // 4-second wall-clock countdown — mirrors the Keep app's 3-2-1-GO
         // overlay. The bike has its own internal countdown of ~4-5 s; after
@@ -426,6 +441,8 @@ class RideRepository private constructor(private val appContext: Context) {
      * the knob to end the session independently.
      */
     private suspend fun endRecording() {
+        if (recordingEnded) return
+        recordingEnded = true
         persistPowerModel()
         debugLogger.close()
         autoExportFit()
@@ -668,7 +685,8 @@ class RideRepository private constructor(private val appContext: Context) {
                 it.copy(lastFit = out, lastFitSessionId = sessionId)
             }
         } catch (e: Exception) {
-            _state.update { it.copy(error = "Export: ${e.message}") }
+            Log.e(TAG, "FIT export failed", e)
+            _state.update { it.copy(error = "Export: ${e::class.simpleName}: ${e.message}") }
         }
     }
 
@@ -734,6 +752,7 @@ class RideRepository private constructor(private val appContext: Context) {
         setOf(RideState.WAITING_KNOB, RideState.TRAINING, RideState.PAUSED)
 
     companion object {
+        private const val TAG = "RideRepository"
         @Volatile private var INSTANCE: RideRepository? = null
         fun get(context: Context): RideRepository =
             INSTANCE ?: synchronized(this) {
