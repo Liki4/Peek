@@ -30,10 +30,17 @@ class StravaClient(
     private val http: OkHttpClient = defaultHttp(),
 ) {
 
-    /** Result of refresh-token exchange. */
+    /** Result of refresh-token exchange.
+     *
+     * @property newRefreshToken Strava rotates the refresh_token on every
+     *   refresh call. The caller MUST persist this value; the old token is
+     *   invalidated after this call. May be the same as the old token in
+     *   some cases (Strava only rotates periodically), but always capture it.
+     */
     data class AccessToken(
         val accessToken: String,
         val expiresAtUnixS: Long,
+        val newRefreshToken: String,
     )
 
     /** A finished upload that resolved to an activity. */
@@ -66,6 +73,7 @@ class StravaClient(
             AccessToken(
                 accessToken = json.getString("access_token"),
                 expiresAtUnixS = json.getLong("expires_at"),
+                newRefreshToken = json.getString("refresh_token"),
             )
         }
     }

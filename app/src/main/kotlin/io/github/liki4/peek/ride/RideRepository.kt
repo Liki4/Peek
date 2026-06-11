@@ -730,6 +730,9 @@ class RideRepository private constructor(private val appContext: Context) {
             val clientSecret = settings.stravaClientSecret.first()!!
             val refreshToken = settings.stravaRefreshToken.first()!!
             val token = strava.refresh(clientId, clientSecret, refreshToken)
+            // Strava rotates refresh_token on every refresh call — persist
+            // the new token so the next upload doesn't fail with a stale one.
+            runCatching { settings.setStravaRefreshToken(token.newRefreshToken) }
             val result = strava.uploadFit(token.accessToken, fitFile)
             runCatching { rideDao.setStravaStatus(sessionId, status = 1, activityId = result.activityId) }
             _state.update { it.copy(uploadingSessionId = null) }
