@@ -1,8 +1,6 @@
 package io.github.liki4.peek.ride
 
 import android.content.Context
-import io.github.liki4.peek.ftms.ErgController
-import io.github.liki4.peek.ftms.FtmsBridge
 import io.github.liki4.peek.protocol.TrainData
 import org.json.JSONObject
 import java.io.BufferedWriter

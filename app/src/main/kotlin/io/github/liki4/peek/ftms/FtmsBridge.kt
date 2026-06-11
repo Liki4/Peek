@@ -18,7 +18,6 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
-import io.github.liki4.peek.ftms.FtmsConstants.CpOp
 import io.github.liki4.peek.ftms.FtmsConstants.CpResult
 import io.github.liki4.peek.ftms.FtmsConstants.MachineFeature
 import io.github.liki4.peek.ftms.FtmsConstants.TargetFeature

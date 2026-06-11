@@ -26,7 +26,7 @@ object IndoorBikeDataEncoder {
 
     fun encode(live: RideUiState.LiveMetrics): ByteArray {
         var flags = 0
-        // Speed is always present (bit 0 stays 0).
+        // Speed is always present (bit 0 "More Data" stays 0 — we fit everything in one packet).
         if (live.rpm != null)        flags = flags or IbdFlag.INSTANT_CADENCE_PRES
         if (live.distanceM != null)  flags = flags or IbdFlag.TOTAL_DISTANCE_PRES
         if (live.resistance != null) flags = flags or IbdFlag.RESISTANCE_LEVEL_PRES

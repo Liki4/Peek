@@ -42,9 +42,11 @@ object FtmsConstants {
     val CHAR_FITNESS_MACHINE_STATUS: UUID = bt(0x2ADA)
 
     // ===== Indoor Bike Data flags (uint16, LE) =====
-    // Bit 0 is INVERTED: when SET, instant speed is OMITTED. We never set it.
+    // Bit 0: "More Data" — when set, means data is split across multiple packets
+    // and instantaneous speed is NOT present in this packet. We always fit
+    // everything in one packet so bit 0 stays 0 (speed always present).
     object IbdFlag {
-        const val MORE_DATA              = 1 shl 0   // omit instant speed when set
+        const val MORE_DATA              = 1 shl 0
         const val AVG_SPEED_PRESENT      = 1 shl 1
         const val INSTANT_CADENCE_PRES   = 1 shl 2
         const val AVG_CADENCE_PRESENT    = 1 shl 3
